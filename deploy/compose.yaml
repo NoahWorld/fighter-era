@@ -1,0 +1,56 @@
+name: fighter-era
+services:
+  db:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD}
+    command: [postgres, -c, shared_buffers=64MB, -c, max_connections=20, -c, work_mem=4MB]
+    volumes:
+      - fighter-era-data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/10-fighter-era.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d fighter_era']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    mem_limit: 256m
+    cpus: 0.5
+    shm_size: 64m
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    image: fighter-era-api:local
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: '4317'
+      NODE_OPTIONS: --max-old-space-size=128
+      DATABASE_URL: postgres://fighter_app:${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD}@db:5432/fighter_era
+      WECHAT_APP_ID: ${WECHAT_APP_ID:?Set the existing AppID}
+      WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+      LOG_LEVEL: info
+    ports: ['127.0.0.1:8088:4317']
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4317/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(e=>{console.error(e.message);process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+volumes:
+  fighter-era-data:

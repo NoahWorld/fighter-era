@@ -54,6 +54,41 @@
       tier: modelIndex + 1, title: MODELS[modelIndex].title };
   }
 
+  function exactKeys(value, keys, context) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).length !== keys.length || !keys.every(key => Object.prototype.hasOwnProperty.call(value, key))) {
+      throw new TypeError('Invalid ' + context + ': expected fields ' + keys.join(', '));
+    }
+  }
+  // Shared by the clients and service so saved combat rules cannot drift.
+  function validateCheckpoint(value) {
+    if (value === null) return null;
+    exactKeys(value, ['version', 'phase', 'stage', 'seed', 'randomState', 'entityId', 'totalTime', 'score', 'kills', 'runStartXp', 'player', 'fireInterval', 'damageBonus', 'freeCharges'], 'checkpoint');
+    exactKeys(value.player, ['hp', 'maxHp', 'weaponLevel'], 'checkpoint player');
+    exactKeys(value.freeCharges, ['bomb', 'support'], 'checkpoint freeCharges');
+    if (value.version !== 1 || !['stage', 'upgrade'].includes(value.phase)
+      || !Number.isInteger(value.stage) || value.stage < 0 || value.stage >= STAGES.length
+      || (value.phase === 'upgrade' && value.stage === STAGES.length - 1)) throw new RangeError('Invalid checkpoint version, phase or stage');
+    for (const field of ['seed', 'randomState']) {
+      if (!Number.isInteger(value[field]) || value[field] < 0 || value[field] > 0xffffffff) throw new RangeError('Invalid checkpoint ' + field + ': expected uint32');
+    }
+    for (const field of ['entityId', 'score', 'kills', 'runStartXp']) {
+      if (!Number.isSafeInteger(value[field]) || value[field] < 0) throw new RangeError('Invalid checkpoint ' + field + ': expected non-negative safe integer');
+    }
+    if (!Number.isFinite(value.totalTime) || value.totalTime < 0 || value.totalTime > 1e9) throw new RangeError('Invalid checkpoint totalTime');
+    if (!Number.isSafeInteger(value.player.hp) || !Number.isSafeInteger(value.player.maxHp)
+      || value.player.hp < 1 || value.player.maxHp < value.player.hp
+      || !Number.isInteger(value.player.weaponLevel) || value.player.weaponLevel < 1 || value.player.weaponLevel > 3) throw new RangeError('Invalid checkpoint player stats');
+    if (!Number.isFinite(value.fireInterval) || value.fireInterval < MIN_FIRE_INTERVAL || value.fireInterval > 0.16
+      || !Number.isFinite(value.damageBonus) || value.damageBonus < 0 || value.damageBonus > 40) throw new RangeError('Invalid checkpoint weapon stats');
+    for (const item of ['bomb', 'support']) {
+      if (![0, 1].includes(value.freeCharges[item])) throw new RangeError('Invalid checkpoint free charge: ' + item);
+    }
+    return { version: 1, phase: value.phase, stage: value.stage, seed: value.seed, randomState: value.randomState,
+      entityId: value.entityId, totalTime: value.totalTime, score: value.score, kills: value.kills, runStartXp: value.runStartXp,
+      player: { ...value.player }, fireInterval: value.fireInterval, damageBonus: value.damageBonus, freeCharges: { ...value.freeCharges } };
+  }
+
   class Game {
     constructor(options = {}) {
       if (options.onEvent !== undefined && typeof options.onEvent !== 'function') throw new TypeError('Game onEvent must be a function');
@@ -68,12 +103,79 @@
       this.stageCount = STAGES.length;
       this.minFireInterval = MIN_FIRE_INTERVAL;
       this.progression = progressionFor(profile.totalXp);
+      this._savedCheckpoint = null;
+      this.inventory = Object.freeze({ bomb: 0, support: 0 });
       this.state = 'menu';
       this.resetRun();
     }
 
     emit(name, payload = {}) { if (this.onEvent) this.onEvent(name, payload); }
     getProfile() { return { ...this.profile }; }
+    get savedCheckpoint() { return this._savedCheckpoint; }
+    getCheckpoint() { return validateCheckpoint(this._savedCheckpoint); }
+    storeCheckpoint(value, emit) {
+      const checkpoint = validateCheckpoint(value);
+      if (checkpoint) { Object.freeze(checkpoint.player); Object.freeze(checkpoint.freeCharges); Object.freeze(checkpoint); }
+      this._savedCheckpoint = checkpoint;
+      if (emit) this.emit('checkpoint', { checkpoint: this.getCheckpoint() });
+    }
+    setSavedCheckpoint(value) {
+      if (!['menu', 'gameover', 'victory'].includes(this.state)) throw new Error('Cannot replace a checkpoint during an active run');
+      this.storeCheckpoint(value, false);
+    }
+    captureCheckpoint(phase = 'stage') {
+      this.storeCheckpoint({ version: 1, phase, stage: this.stage, seed: this.seed >>> 0, randomState: this.randomState,
+        entityId: this.id, totalTime: this.totalTime, score: this.score, kills: this.kills, runStartXp: this.runStartXp,
+        player: { hp: this.player.hp, maxHp: this.player.maxHp, weaponLevel: this.player.weaponLevel },
+        fireInterval: this.fireInterval, damageBonus: this.damageBonus,
+        freeCharges: { bomb: this.bombCharges, support: this.supportCharges } }, true);
+    }
+    updateCheckpointCharges() {
+      if (!this._savedCheckpoint || this._savedCheckpoint.phase !== 'stage') throw new Error('No stage checkpoint for ability consumption');
+      this.storeCheckpoint({ ...this._savedCheckpoint, freeCharges: { bomb: this.bombCharges, support: this.supportCharges } }, true);
+    }
+    setInventory(value) {
+      exactKeys(value, ['bomb', 'support'], 'inventory');
+      for (const item of ['bomb', 'support']) {
+        if (!Number.isSafeInteger(value[item]) || value[item] < 0) throw new RangeError('Invalid inventory balance: ' + item);
+      }
+      this.inventory = Object.freeze({ ...value });
+    }
+    abilityAvailable(type, source) {
+      if (!['free', 'inventory'].includes(source)) throw new RangeError('Unknown ability source: ' + source);
+      if (this.state !== 'playing') return false;
+      return source === 'free' ? this[type + 'Charges'] > 0 : this.inventory[type] > 0;
+    }
+    consumeAbility(type, source) {
+      if (source === 'free') { this[type + 'Charges']--; this.updateCheckpointCharges(); }
+      else this.setInventory({ ...this.inventory, [type]: this.inventory[type] - 1 });
+    }
+    continueRun() {
+      if (!['menu', 'gameover'].includes(this.state) || !this._savedCheckpoint) return false;
+      const checkpoint = this.getCheckpoint();
+      if (checkpoint.runStartXp > this.profile.totalXp) throw new RangeError('Checkpoint experience baseline exceeds the player profile');
+      this.resetRun();
+      this.seed = checkpoint.seed;
+      this.randomState = checkpoint.randomState;
+      this.id = checkpoint.entityId;
+      this.stage = checkpoint.stage;
+      this.totalTime = checkpoint.totalTime;
+      this.score = checkpoint.score;
+      this.kills = checkpoint.kills;
+      this.runStartXp = checkpoint.runStartXp;
+      Object.assign(this.player, checkpoint.player);
+      this.fireInterval = checkpoint.fireInterval;
+      this.damageBonus = checkpoint.damageBonus;
+      if (this.fireInterval === MIN_FIRE_INTERVAL) this.upgradeOptions.find(option => option.id === 'rapid').description = '射速已达上限 · 单发伤害 +0.4';
+      this.prepareStage();
+      this.supportCharges = checkpoint.freeCharges.support;
+      this.bombCharges = checkpoint.freeCharges.bomb;
+      this.storeCheckpoint(checkpoint, true);
+      if (checkpoint.phase === 'upgrade') { this.bossSpawned = true; this.progress = 1; this.setState('upgrade'); }
+      else { this.setState('launching'); this.emit('cinematic', { phase: 'launch', stage: this.stage }); }
+      return true;
+    }
+    restoreCheckpoint(value) { this.setSavedCheckpoint(value); return this.continueRun(); }
     addExperience(amount) {
       if (!Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(this.profile.totalXp + amount)) throw new RangeError('Experience amount and total must be positive safe integers');
       const previousLevel = this.progression.level;
@@ -159,6 +261,7 @@
     }
     start() {
       this.resetRun();
+      this.captureCheckpoint();
       this.setState('launching');
       this.emit('cinematic', { phase: 'launch', stage: this.stage });
     }
@@ -201,18 +304,20 @@
       this.lastUpgrade = upgrade.title;
       this.stage++;
       this.prepareStage();
+      this.captureCheckpoint();
       this.setState('playing');
       this.emit('upgrade', { id });
       this.emit('stage', { stage: this.stage, name: this.stageName });
     }
 
-    callSupport() {
-      if (this.state !== 'playing' || this.supportCharges < 1 || this.supportTime > 0) return false;
-      this.supportCharges--;
+    callSupport(source = 'free') {
+      if (!this.abilityAvailable('support', source) || this.supportTime > 0) return false;
+      this.consumeAbility('support', source);
       this.supportTime = this.supportDuration;
       this.allies = [-1, 1].map(side => ({ side, x: clamp(this.player.x + side * 58, 24, WIDTH - 24),
         y: HEIGHT + 70, r: 14, shipLevel: this.player.shipLevel, fireTimer: 0 }));
-      this.emit('ability', { type: 'support', phase: 'called', stage: this.stage, charges: this.supportCharges });
+      this.emit('ability', { type: 'support', phase: 'called', stage: this.stage, charges: this.supportCharges,
+        ...(source === 'inventory' ? { source } : {}) });
       return true;
     }
     endSupport(reason) {
@@ -244,9 +349,9 @@
         }
       }
     }
-    useBomb() {
-      if (this.state !== 'playing' || this.bombCharges < 1) return false;
-      this.bombCharges--;
+    useBomb(source = 'free') {
+      if (!this.abilityAvailable('bomb', source) || this.bombTime > 0) return false;
+      this.consumeAbility('bomb', source);
       this.bombTime = this.bombDuration;
       const targets = this.enemies.filter(enemy => enemy.hp > 0 && !enemy.destroyed &&
         enemy.x + enemy.r >= 0 && enemy.x - enemy.r <= WIDTH && enemy.y + enemy.r >= 0 && enemy.y - enemy.r <= HEIGHT)
@@ -254,7 +359,8 @@
       const clearedBullets = this.enemyBullets.length;
       this.enemyBullets = [];
       this.emit('ability', { type: 'bomb', phase: 'detonated', stage: this.stage,
-        charges: this.bombCharges, enemies: targets.length, clearedBullets });
+        charges: this.bombCharges, enemies: targets.length, clearedBullets,
+        ...(source === 'inventory' ? { source } : {}) });
       // Award every visible enemy before a boss can trigger stage settlement.
       for (const enemy of targets) { enemy.hp = 0; this.destroyEnemy(enemy); }
       this.enemies = this.enemies.filter(enemy => enemy.hp > 0 && !enemy.destroyed);
@@ -530,7 +636,7 @@
         this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1);
         this.emit('boss', { phase: 'defeated', stage: this.stage, enemyId: enemy.id });
         if (this.stage === STAGES.length - 1) this.finish('victory');
-        else this.setState('upgrade');
+        else { this.captureCheckpoint('upgrade'); this.setState('upgrade'); }
       } else if (this.kills % 5 === 0) {
         this.pickups.push({ x: enemy.x, y: enemy.y, r: 12, type: this.kills % 10 === 0 ? 'repair' : 'power', t: 0 });
       }
@@ -553,10 +659,11 @@
     }
     finish(state) {
       this.bossWarningTime = 0;
+      if (state === 'victory') this.storeCheckpoint(null, true);
       this.bestScore = Math.max(this.bestScore, this.score);
       this.setState(state);
       this.emit(state, { score: this.score, stage: this.stage, kills: this.kills });
     }
   }
-  return { Game, WIDTH, HEIGHT, STAGES };
+  return { Game, WIDTH, HEIGHT, STAGES, validateCheckpoint };
 });

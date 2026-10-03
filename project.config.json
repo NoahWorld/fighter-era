@@ -76,6 +76,26 @@
       {
         "value": "project.private.config.json",
         "type": "file"
+      },
+      {
+        "value": "backend",
+        "type": "folder"
+      },
+      {
+        "value": "deploy",
+        "type": "folder"
+      },
+      {
+        "value": ".dockerignore",
+        "type": "file"
+      },
+      {
+        "value": "package-lock.json",
+        "type": "file"
+      },
+      {
+        "value": "node_modules",
+        "type": "folder"
       }
     ],
     "include": []

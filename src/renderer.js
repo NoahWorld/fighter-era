@@ -187,19 +187,24 @@
     pauseButton() { return { id: 'pause', label: '暂停', x: 8, y: 10, w: 44, h: 44, disabled: false }; }
 
     abilityButtons(game) {
+      const supportBalance = game.supportCharges + game.inventory.support;
+      const bombBalance = game.bombCharges + game.inventory.bomb;
       return [
         { id: 'support', label: '救援', x: 347, y: 480, w: 50, h: 56,
-          disabled: game.supportCharges === 0 || game.supportTime > 0,
-          active: game.supportTime > 0, status: game.supportTime > 0 ? '作战 ' + Math.ceil(game.supportTime) + 's' : '余量 ' + game.supportCharges },
+          disabled: supportBalance === 0 || game.supportTime > 0,
+          active: game.supportTime > 0, status: game.supportTime > 0 ? '作战 ' + Math.ceil(game.supportTime) + 's' : '余量 ' + supportBalance },
         { id: 'bomb', label: '轰炸弹', x: 347, y: 548, w: 50, h: 56,
-          disabled: game.bombCharges === 0 || game.bombTime > 0,
-          active: game.bombTime > 0, status: game.bombTime > 0 ? '清空空域' : '余量 ' + game.bombCharges },
+          disabled: bombBalance === 0 || game.bombTime > 0,
+          active: game.bombTime > 0, status: game.bombTime > 0 ? '清空空域' : '余量 ' + bombBalance },
       ];
     }
 
     getButtons(game) {
       switch (game.state) {
-        case 'menu': return [{ id: 'start', label: '驾驶战机出击', x: 34, y: 567, w: 337, h: 57, disabled: false }];
+        case 'menu': return game.savedCheckpoint ? [
+          { id: 'continue', label: game.savedCheckpoint.phase === 'upgrade' ? '继续选择过关补给' : '继续第 ' + (game.savedCheckpoint.stage + 1) + ' 关', x: 34, y: 558, w: 337, h: 45, disabled: false },
+          { id: 'start', label: '驾驶战机重新出击', x: 34, y: 614, w: 337, h: 49, disabled: false },
+        ] : [{ id: 'start', label: '驾驶战机出击', x: 34, y: 567, w: 337, h: 57, disabled: false }];
         case 'launching':
         case 'ejecting': return [this.pauseButton()];
         case 'playing': return [this.pauseButton(), ...this.abilityButtons(game)];
@@ -210,7 +215,14 @@
         case 'upgrade': return game.upgradeOptions.map((option, i) => ({
           id: 'upgrade:' + option.id, label: option.title, x: 29, y: 283 + i * 86, w: 347, h: 74, disabled: false,
         }));
-        case 'gameover':
+        case 'gameover': if (game.savedCheckpoint) return [
+          { id: 'continue', label: '从第 ' + (game.savedCheckpoint.stage + 1) + ' 关起点继续', x: 53, y: 458, w: 299, h: 54, disabled: false },
+          { id: 'restart', label: '重新出击', x: 53, y: 525, w: 299, h: 54, disabled: false },
+          { id: 'home', label: '返回机库', x: 53, y: 592, w: 299, h: 47, disabled: false },
+        ];
+        // A final victory clears its checkpoint, so no continuation is offered.
+        // Falls through to the ordinary result controls when no save exists.
+        // eslint-disable-next-line no-fallthrough
         case 'victory': return [
           { id: 'restart', label: game.state === 'victory' ? '再次出击' : '重新出击', x: 53, y: 458, w: 299, h: 54, disabled: false },
           { id: 'home', label: '返回机库', x: 53, y: 525, w: 299, h: 47, disabled: false },
@@ -830,11 +842,11 @@
       this.text(p.xp + ' / ' + p.nextXp, 371, 528, 9, '#a5b5ca', '500', 'right');
       this.box(34, 544, 337, 3, '#25344a', null, 1.5);
       this.box(34, 544, 337 * Math.min(1, p.xp / p.nextXp), 3, C.gold, null, 1.5);
-      this.button(this.getButtons(game)[0]);
-      this.text('单指拖动  ·  自动开火  ·  击落敌机升级', W / 2, 648, 10, '#8295af', '400', 'center');
-      this.line(34, 674, 371, 674, '#1d2d44');
-      this.text('最高纪录', 34, 694, 9, '#697f9c');
-      this.text(String(game.bestScore).padStart(6, '0'), 371, 694, 12, '#b8c7dc', '500', 'right');
+      this.getButtons(game).forEach(button => this.button(button, button.id === 'start' && Boolean(game.savedCheckpoint)));
+      this.text('单指拖动  ·  自动开火  ·  击落敌机升级', W / 2, game.savedCheckpoint ? 678 : 648, 10, '#8295af', '400', 'center');
+      this.line(34, game.savedCheckpoint ? 693 : 674, 371, game.savedCheckpoint ? 693 : 674, '#1d2d44');
+      this.text('最高纪录', 34, game.savedCheckpoint ? 709 : 694, 9, '#697f9c');
+      this.text(String(game.bestScore).padStart(6, '0'), 371, game.savedCheckpoint ? 709 : 694, 12, '#b8c7dc', '500', 'right');
     }
 
     hud(game) {
@@ -926,7 +938,7 @@
       const paused = game.state === 'paused';
       const victory = game.state === 'victory';
       const y = paused ? 188 : 133;
-      this.box(28, y, 349, paused ? 353 : 463, '#101d30', '#35475f', 18);
+      this.box(28, y, 349, paused ? 353 : game.state === 'gameover' && game.savedCheckpoint ? 530 : 463, '#101d30', '#35475f', 18);
       this.line(56, y + 1, 349, y + 1, '#9a815c', 1);
       const accent = victory ? C.gold : paused ? C.blue : '#e5ab87';
       this.circle(W / 2, y + 60, 26, '#1b2a40', '#3c5069');
@@ -950,7 +962,7 @@
         this.box(90, 422, 225 * Math.min(1, game.progression.xp / game.progression.nextXp), 3, C.gold, null, 1.5);
         this.text('本次 +' + (game.progression.totalXp - game.runStartXp) + ' XP · 已计入永久经验', W / 2, 441, 9, '#879bb7', '400', 'center');
       }
-      this.getButtons(game).forEach(button => this.button(button, button.id === 'home'));
+      this.getButtons(game).forEach(button => this.button(button, button.id === 'home' || button.id === 'restart' && Boolean(game.savedCheckpoint)));
     }
 
     upgrade(game) {

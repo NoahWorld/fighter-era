@@ -23,6 +23,7 @@ async function simulateWechatApi(options = {}) {
   const loadingMessages = [];
   const logs = [];
   const packageRequests = [];
+  const cloudCalls = { login: [], requests: [] };
   const timers = new Map();
   let timerId = 0;
   const info = { windowWidth: 375, windowHeight: 812, pixelRatio: 3 };
@@ -79,18 +80,44 @@ async function simulateWechatApi(options = {}) {
     showModal: options => modals.push(options)
   };
   if (options.missingSubpackageApi) delete wx.loadSubpackage;
+  let requireModule = createRequire(entry);
+  if (options.cloudFailure) {
+    const cloudEntry = path.resolve(__dirname, '../src/wechat-cloud.js');
+    const cloudRequire = createRequire(cloudEntry);
+    const cloudModule = { exports: {} };
+    // Use the real bridge and client, changing only the public endpoint and
+    // simulated platform responses. No shared module-cache mutation is needed.
+    const compileCloud = vm.runInThisContext('(function(require,module,exports,console){\n' + fs.readFileSync(cloudEntry, 'utf8') + '\n})', { filename: cloudEntry });
+    compileCloud(id => id === './cloud-config.js' ? { apiBase: 'https://game.example.test' } : cloudRequire(id),
+      cloudModule, cloudModule.exports, { error: (...args) => logs.push(args), info: (...args) => logs.push(args) });
+    requireModule = id => id === './src/wechat-cloud.js' ? cloudModule.exports : createRequire(entry)(id);
+    wx.login = request => {
+      cloudCalls.login.push(request);
+      if (options.cloudFailure === 'login') request.fail({ errMsg: 'login:fail simulated identity outage' });
+      else request.success({ code: 'wechat-code' });
+    };
+    wx.request = request => {
+      cloudCalls.requests.push(request);
+      request.fail({ errMsg: 'request:fail simulated authentication outage' });
+    };
+  }
   for (const name of ['Error', 'Hide', 'Show', 'WindowResize', 'TouchStart', 'TouchMove', 'TouchEnd', 'TouchCancel']) {
     wx['on' + name] = callback => { handlers[name] = callback; };
   }
   const sandbox = {
-    wx, GameGlobal: {}, require: createRequire(entry),
-    console: { info: (...args) => logs.push(args), warn() {}, error() {} },
+    wx, GameGlobal: {}, require: requireModule,
+    console: { info: (...args) => logs.push(args), warn: (...args) => logs.push(args), error: (...args) => logs.push(args) },
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeout: id => timers.delete(id),
     requestAnimationFrame: callback => { queuedFrame = callback; return ++frameId; },
     cancelAnimationFrame: () => { queuedFrame = null; }
   };
   vm.runInNewContext(fs.readFileSync(entry, 'utf8'), sandbox, { filename: entry });
+  if (options.cloudFailure) {
+    await new Promise(resolve => setImmediate(resolve));
+    return { fighterEra: sandbox.GameGlobal.fighterEra, handlers, modals, storage, writes, logs,
+      cloudCalls, loadingMessages, images, packageRequests, hasFrame: queuedFrame !== null };
+  }
   assert.ok(sandbox.GameGlobal.fighterEra, 'the real 战机时代 entry must load its shared modules');
   if (!options.missingSubpackageApi) assert.equal(modals.length, 0, 'entry initialization must not fail');
   const { game, diagnostics } = sandbox.GameGlobal.fighterEra;
@@ -175,6 +202,40 @@ function finishLaunch(game) {
   assert.equal(game.state, 'playing');
   assert.equal(game.totalTime, 0, 'launching cannot advance combat time');
 }
+
+test('WeChat API simulation: configured cloud login failures stop visibly and preserve local records without playable fallback', async () => {
+  const { Game } = require('../src/engine.js');
+  const previous = new Game({ profile: { version: 1, totalXp: 700 } });
+  previous.start();
+  const saved = new Map([
+    ['fighter-era.profile', { version: 1, totalXp: 700 }],
+    ['neon-wing.best-score', 1800],
+    ['fighter-era.checkpoint', previous.getCheckpoint()]
+  ]);
+  for (const failure of ['login', 'auth']) {
+    const storage = new Map(structuredClone([...saved]));
+    const app = await simulateWechatApi({ storage, cloudFailure: failure });
+    assert.equal(app.cloudCalls.login.length, 1, 'a configured endpoint must attempt real WeChat login');
+    assert.equal(app.cloudCalls.requests.length, failure === 'auth' ? 1 : 0);
+    if (failure === 'auth') {
+      assert.equal(app.cloudCalls.requests[0].url, 'https://game.example.test/v1/auth/wechat');
+      assert.deepEqual(app.cloudCalls.requests[0].data, { code: 'wechat-code' });
+    }
+    assert.equal(app.fighterEra, undefined, 'failed cloud initialization must not expose a playable local replacement');
+    assert.equal(app.hasFrame, false);
+    assert.equal(app.handlers.TouchStart, undefined, 'combat input must not be registered after login fails');
+    assert.equal(app.images.length, 0);
+    assert.equal(app.packageRequests.length, 0);
+    assert.equal(app.modals.length, 1, 'the initialization failure must be visible');
+    assert.equal(app.modals[0].title, '游戏已停止');
+    assert.match(app.modals[0].content, failure === 'login' ? /simulated identity outage/ : /网络异常.*重试次数 1/);
+    assert.ok(app.loadingMessages.some(message => message.includes('游戏已停止')));
+    assert.ok(app.logs.some(([name, detail]) => name === '[Fighter Era / cloud-status]' && detail.state === 'error'
+      && /云登录失败，已停止开局以保护存档/.test(detail.message)));
+    assert.equal(app.writes.length, 0, 'neither login failure may write replacement local or cloud records');
+    assert.deepEqual([...storage], [...saved]);
+  }
+});
 
 test('WeChat API simulation: 10 FPS and 4 FPS preserve one second of gameplay', async () => {
   for (const frameMilliseconds of [100, 250]) {

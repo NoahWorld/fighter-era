@@ -1,0 +1,8 @@
+[Unit]
+Description=Fighter Era PostgreSQL backup
+Requires=docker.service
+After=docker.service
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/fighter-era/deploy/backup.sh
+UMask=0077

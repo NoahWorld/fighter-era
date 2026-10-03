@@ -43,17 +43,19 @@
 
   try {
     if (!window.Shooter || !window.ShooterRenderer || !window.ShooterAssets) throw new Error('游戏引擎、渲染器或素材模块未加载，请检查资源请求。');
-    const { Game, WIDTH, HEIGHT } = window.Shooter;
+    const { Game, WIDTH, HEIGHT, validateCheckpoint } = window.Shooter;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('浏览器无法创建 Canvas 2D 绘图上下文。');
     const assets = await window.ShooterAssets.loadAssets(() => new Image());
     // A global error may have stopped initialization while images were loading.
     if (stopped) return;
     const profileKey = 'fighter-era.profile';
+    const checkpointKey = 'fighter-era.checkpoint';
     // Keep the original score key so existing pilots retain their best run.
     const bestScoreKey = 'neon-wing.best-score';
     let bestScoreStorageAvailable = true;
     let profileStorageAvailable = true;
+    let checkpointStorageAvailable = true;
     let bestScore = 0;
     try {
       const stored = localStorage.getItem(bestScoreKey);
@@ -80,6 +82,23 @@
     } catch (error) {
       profileStorageAvailable = false;
       report('profile-storage', '成长档案不可用，原存档不会被覆盖；本次从初始等级临时游玩，经验无法保存。', error);
+    }
+    let checkpoint = null;
+    try {
+      const stored = localStorage.getItem(checkpointKey);
+      if (stored !== null) checkpoint = validateCheckpoint(JSON.parse(stored));
+    } catch (error) {
+      checkpointStorageAvailable = false;
+      report('checkpoint-storage', '续关记录不可用，原记录保留；本次无法保存续关。', error);
+    }
+
+    function saveCheckpoint() {
+      if (!checkpointStorageAvailable) return;
+      try { localStorage.setItem(checkpointKey, JSON.stringify(game.getCheckpoint())); }
+      catch (error) {
+        checkpointStorageAvailable = false;
+        report('checkpoint-storage', '续关记录保存失败，请勿关闭页面。', error);
+      }
     }
 
     function saveProfile() {
@@ -173,6 +192,7 @@
     const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'upgrade', 'levelup', 'gameover', 'victory']);
     game = new Game({ profile, bestScore, onEvent: (name, payload) => {
       if (name === 'progression') { saveProfile(); syncPilotBriefing(); }
+      if (name === 'checkpoint') saveCheckpoint();
       if (name === 'gameover' || name === 'victory') saveBestScore();
       try { audio.play(name); }
       catch (error) {
@@ -182,6 +202,7 @@
       }
       if (loggedEvents.has(name)) console.info(`[Fighter Era / ${name}]`, { state: game && game.state, stage: game && game.stage, score: game && game.score, payload });
     } });
+    game.setSavedCheckpoint(checkpoint);
     renderer = new window.ShooterRenderer.Renderer(ctx, assets);
     window.fighterEra = { game, renderer, diagnostics };
     window.neonWing = window.fighterEra;
@@ -215,6 +236,7 @@
       if (id !== 'support' && id !== 'bomb') resetInput();
       void audio.unlock();
       if (id === 'start' || id === 'restart') game.start();
+      else if (id === 'continue') game.continueRun();
       else if (id === 'pause') game.pause();
       else if (id === 'resume') { lastFrame = null; game.resume(); }
       else if (id === 'home') game.home();

@@ -2,24 +2,26 @@
 
 ## 目标与入口
 
-产品名「战机时代 / FIGHTER ERA」。零依赖原生 Canvas 竖屏射击游戏，桌面采用深空蓝和金色成长档案界面，手机显示完整游戏。浏览器与微信小游戏共享引擎、渲染器和本地素材；逻辑画布固定 405 × 720。浏览器入口 `index.html` → `src/browser.js`；微信入口 `game.js`，配置 `game.json` 与 `project.config.json`。用户提供的六张透明 PNG 图集在 `assets/`，新增两张位于 `assets/expansion/` 微信分包；不引入未经任务需要的远程素材、字体或构建依赖。
+产品名「战机时代 / FIGHTER ERA」。零依赖原生 Canvas 竖屏射击客户端，桌面采用深空蓝和金色成长档案界面，手机显示完整游戏。浏览器与微信小游戏共享引擎、渲染器和本地素材；逻辑画布固定 405 × 720。浏览器入口 `index.html` → `src/browser.js`；微信入口 `game.js`，配置 `game.json` 与 `project.config.json`。用户提供的六张透明 PNG 图集在 `assets/`，新增两张位于 `assets/expansion/` 微信分包；客户端不引入未经任务需要的远程素材、字体或构建依赖。账号后端独立位于 `backend/`，使用 Node.js 22、Fastify 5、PostgreSQL 17；不能把后端依赖或密钥打入微信包。
 
 游戏画面包含星空、远景行星、战舰（`warship`）和敌对行星（`planet`）。100 关分为 10 个星域，每 10 关切换一套背景配色；固定 84 颗星点分层向下循环，星云与远景天体完全离屏后复用，不添加大图、逐帧渐变、模糊或离屏画布分配。背景时钟在菜单、登机、战斗之间连续，暂停和结果页面冻结。左侧生命条使用固定高度、比例和数值表达生命，不随永久等级增加而无限延长。开始按钮文案为「驾驶战机出击」。
 
 ## 契约
 
-- `src/engine.js` 使用 UMD 导出 `{ Game, WIDTH, HEIGHT, STAGES }`：浏览器 `window.Shooter`，微信 / Node `require('./src/engine.js')`。`STAGES` 为冻结的 100 关配置，`game.stageCount` 与其长度一致，`game.stage` 从 0 到 99，`game.stageConfig` 在 `prepareStage()` 更新。章节为 0–9，不能用关卡索引直接访问 10 个背景。末关 BOSS 击败进入胜利，前 99 关进入升级。
+- `src/engine.js` 使用 UMD 导出 `{ Game, WIDTH, HEIGHT, STAGES, validateCheckpoint }`：浏览器 `window.Shooter`，微信 / Node `require('./src/engine.js')`。`STAGES` 为冻结的 100 关配置，`game.stageCount` 与其长度一致，`game.stage` 从 0 到 99，`game.stageConfig` 在 `prepareStage()` 更新。章节为 0–9，不能用关卡索引直接访问 10 个背景。末关 BOSS 击败进入胜利，前 99 关进入升级。
 - `new Game({ profile: { version: 1, totalXp: 0 }, onEvent: (name, payload) => {}, bestScore: 0 })`；方法 `start()`、`update(dtSeconds)`、`moveBy(dx, dy)`、`pause()`、`resume()`、`home()`、`chooseUpgrade(id)`、`getProfile()`、`callSupport()`、`useBomb()`。引擎必须验证档案版本与经验范围，不能接受 NaN、负数、非整数或超出安全整数范围的经验。
 - `game.progression` 为 `{ level, xp, nextXp, tier, title, totalXp }`，由累计经验派生；每次经验变化发 `progression`，升级时另发 `levelup`。`getProfile()` 返回独立快照，不把可变的内部状态直接交给存储。
+- 续关接口为 `getCheckpoint()`、`setSavedCheckpoint(snapshotOrNull)`、`continueRun()`、`restoreCheckpoint(snapshot)`，`game.savedCheckpoint` 为只读快照，渲染器据此显示 `continue` 按钮。加载只能通过公开方法，禁止平台直接修改引擎字段。`setSavedCheckpoint()` 只允许菜单或结算状态，不发保存事件；无可恢复记录时 `continueRun()` 返回 `false`。
 - 状态为 `menu / launching / playing / ejecting / paused / upgrade / gameover / victory`。平台通过 `game.state` 处理操作，不要直接篡改战斗状态。
 - 每次 `start()` / 重开先进入 `launching`，3.2 秒登机起飞后进入战斗；致命伤先进入 `ejecting`，2.6 秒弹射逃生后才结算 `gameover`。`cinematicTime` 只在动画期间递增；期间冻结战斗、禁用移动。`isActive()` 包括战斗及两种动画；`pause()` 保存 `pausedFrom`，`resume()` 恢复原态，后台和长帧必须暂停动画而非跳过。动画 `cinematic` 事件包含 `phase: launch / eject` 和关卡。下一关升级仍直接进入战斗。
 - BOSS 登场启动 `bossWarningTime = bossWarningDuration = 2.4`，渲染三次柔和红色边缘脉冲并优先显示「BOSS 出现」。计时只随战斗推进、暂停冻结；BOSS 击败、己方致命伤、结算、回机库及新局须清理。`boss` 事件包含 `phase: appeared / defeated`、`stage`、`enemyId`，同一 BOSS 的击败事件只能发一次。升级与最终胜利分别明确显示 BOSS 已击败，失败明确显示我方战机已被击败。
 - `src/assets.js` 使用 UMD 导出 `{ manifest, frames, loadAssets }`：浏览器 `window.ShooterAssets`；`await loadAssets(createImage)` 返回 `{images, frames}`。浏览器传 `() => new Image()`，微信传 `() => wx.createImage()`。六张图集须全部解码并验证尺寸后才允许渲染与开局；加载中明确显示状态，失败或超时给出素材路径并停止，不用旧矢量图静默兜底。微信先 `wx.loadSubpackage({name:'fleet-assets'})`，显示进度；失败、无效任务或 30 秒超时均停止。资源分包也须保留 `assets/expansion/game.js` 入口，符合本机官方编译器要求。分包成功后再解码图片；窗口改变仍保留当前加载阶段。主包和扩展包分别检查资源预算，不能因新增素材直接放宽主包限制。
 - `src/renderer.js` 使用 UMD 导出 `{ Renderer }`：浏览器 `window.ShooterRenderer`；实例 `new Renderer(ctx, assets)`，`draw(game, renderTimeSeconds)`、`getButtons(game)`。用 `drawImage` 源矩形取精灵，保留原始宽高比。邻近轮廓重叠的帧可包含 `regions`，每项是绝对源坐标 `{x,y,w,h}`，在帧内且互不重叠，渲染共享同一比例与原点；不能把邻架机头/尾焰带入当前帧。图集仅做 PNG 无损重新压缩，必须保留原始 RGBA 像素与透明度。非行星敌人必须有明确 `appearance:{sheet,index,rotation}`，禁止按敌人 ID 猜素材；新 `enemyVariants` 10 款朝上，用 π 旋转，`fleet` 10 款朝右，用 π/2 旋转。BOSS 的 `form` 明确为 `fighter / warship`，血条放在旋转后的高度之上，敌方整体保持红色色系。
-- 按钮布局返回 `{ id, label, x, y, w, h, disabled }`，单位为逻辑坐标。ID 为 `start / restart / pause / resume / home / support / bomb / upgrade:spread / upgrade:rapid / upgrade:repair`。浏览器真实透明 DOM 按钮必须与这些几何数据及禁用状态同步，且键盘焦点可见；按 ID 复用节点，倒计时更新不能替换正在接收触摸的节点。微信禁用按钮仍占用本次触摸，不触发技能、不穿透成拖动。R / B 分别为浏览器救援 / 轰炸快捷键，只在战斗中响应首次按下。
+- 按钮布局返回 `{ id, label, x, y, w, h, disabled }`，单位为逻辑坐标。ID 为 `start / restart / continue / pause / resume / home / support / bomb / upgrade:spread / upgrade:rapid / upgrade:repair`。浏览器真实透明 DOM 按钮必须与这些几何数据及禁用状态同步，且键盘焦点可见；按 ID 复用节点，倒计时更新不能替换正在接收触摸的节点。微信禁用按钮仍占用本次触摸，不触发技能、不穿透成拖动。R / B 分别为浏览器救援 / 轰炸快捷键，只在战斗中响应首次按下。
 - 平台负责 ctx 的 DPR / 黑边映射；渲染器使用逻辑坐标，不重置为物理屏幕尺寸。正常帧间隔不超过 0.25 秒时必须完整传给引擎，由引擎细分模拟，不能截短时间导致低帧率游戏变慢。超过 0.25 秒时，`playing / launching / ejecting` 状态显式暂停、重置时钟并给出诊断；菜单、升级、结算等非战斗状态只重置时钟，不把正常空闲调度当故障。暂停恢复时重置时钟。
 - 只跟踪第一根有效手指；相对拖动、按钮优先、释放后自动开火。切后台 / 失焦暂停，回前台不自动继续。
 - 每关救援与轰炸弹各一次，`prepareStage()` 补满 `supportCharges / bombCharges`。`callSupport()` / `useBomb()` 在非战斗或用尽时明确返回 `false`，成功返回 `true`。救援生成两架 `allies`，`supportTime / supportDuration` 表达 8 秒剩余 / 总时长，含入场和撤离；援军子弹沿用 `playerBullets` 碰撞路径，带 `source: 'support'`。暂停冻结援军，过关或己方被击败终止救援。
+- 额外道具库存通过 `setInventory({bomb,support})` 更新，与每关免费次数分开。默认 `callSupport()` / `useBomb()` 只消耗免费次数；`source='inventory'` 仅供已收到服务端扣除确认的平台调用，不能自行把免费次数不足当作库存消费。技能按钮显示免费次数与库存之和；救援或轰炸效果进行中不得再次扣除同类道具。
 - 轰炸立即击败所有与画面相交的活敌（包括 BOSS），清除所有敌弹；保留我方、援军、已有增益、拾取物和本次击杀掉落。屏外敌人不计奖励；BOSS 最后处理，所有击杀均按正常规则发经验与结算事件，不能重复奖励。`bombTime / bombDuration` 为 0.9 秒特效；升级和胜利面板下仍衰减此特效，不能推进冻结的战斗，暂停时冻结。全局爆炸粒子最多 320 个，批量清屏不得无限堆积。
 
 ## 永久成长与存档
@@ -28,13 +30,33 @@
 - 四个成长称号固定为 Lv.1 游隼、Lv.3 破晓、Lv.6 雷霆、Lv.10 星曜；十款外观分别在 Lv.1–10 解锁，渲染图集索引为 `Math.min(level, 10) - 1`，不改变成长数值与存档契约。星曜后保持第十款外观，等级仍继续增长，不设置玩法等级上限。序列化数值仍受 JavaScript 安全整数范围约束。
 - 档案键 `fighter-era.profile`：浏览器保存 JSON 字符串，微信保存对象，结构 `{version:1,totalXp:nonnegativeSafeInteger}`。必须在 `progression` 事件同步保存，不依赖逐帧检查、结算或切后台才写入，避免未结算击杀经验丢失。
 - 最高分继续使用 `neon-wing.best-score` 保留旧纪录，仅在 `gameover / victory` 事件发现更高纪录时写入；旧键是有意保留的兼容协议。
+- 续关键为 `fighter-era.checkpoint`。`checkpoint` 事件的 payload 为 `{checkpoint}`，存储的值是 `getCheckpoint()` 返回的续关点本身，不含外层包装；值为 `null` 或严格版本 1 对象：`phase / stage / seed / randomState / entityId / totalTime / score / kills / runStartXp / player:{hp,maxHp,weaponLevel} / fireInterval / damageBonus / freeCharges:{bomb,support}`。`phase='stage'` 从该关开头恢复波次，不恢复敌机、子弹、粒子或活动中的技能；`phase='upgrade'` 恢复 BOSS 已击败后的选择界面，不重复发放 BOSS 经验或结算。生命必须为正数，最后一关不能保存升级选择状态。后端复用 `validateCheckpoint` 并另设 API 数值上限，不能另写一个语义不同的续关验证器。
+- 开局、BOSS 击败、选择升级、使用免费技能都更新续关点。已用免费次数写入同一关的起点记录，恢复失败关不能重新发免费次数；只有真正进入下一关才补满。永久经验取当前账号档案，局内生命、火力、起点分数和击杀数取续关点。返回机库保留续关点；重新出击替换旧点；最终胜利清空。`checkpoint` 事件可能先于 `state` 切换，平台不能用旧 `game.state` 推断这次存档的对局状态。
 - 档案损坏、格式不符或读取失败时，显式诊断后可使用本会话临时初始档案，但必须禁用该键写入，保护原数据。写失败也禁用后续写入并持续提示。最高分和经验存档分别管理失败状态，不能把一个键损坏误判为全部存储不可用。
+
+## 云存档与后端
+
+- 浏览器仍只保存当前来源的本机档案，不调用账号后端。微信适配 `src/wechat-cloud.js` 使用无第三方依赖的 `src/cloud-save.js`；公开配置 `src/cloud-config.js` 的 `apiBase` 默认空，显示「云存档待配置 · 当前仅本机保存」，不调用真实登录。启用前必须准备小游戏 AppSecret、HTTPS 服务地址及微信 request 合法域名；AppSecret 和数据库凭据只在服务器，不能写入客户端或公开仓库。
+- 身份链路为 `wx.login()` → `POST /v1/auth/wechat` → 服务端兑换 `openid` → 自有 Bearer token。用户身份只能由服务端令牌确定，不能信任客户端提交的用户编号。当前保存账号标识、永久经验、最高分、通关纪录、续关点和道具库存；没有获取头像或昵称。微信 `session_key` 不下发、不入库；自有 token 数据库仅存 SHA-256 摘要。
+- 接口事实源为 `backend/src/schemas.js`、`backend/src/store.js` 和 [后端说明](backend/README.md)。保护接口包括 `GET /v1/me`、`POST /v1/me/import`、`PUT /v1/me/save`、`POST /v1/inventory/consume`。首次本地导入仅允许新账号，不能覆盖已有云档。存档采用 `expectedRevision` 与事务行锁；每次变更带 UUID `mutationId`，相同编号、相同内容重试不重复结算，相同编号不同内容必须拒绝。409 冲突显式提示并停止自动覆盖。
+- `WechatCloud.prepare()` 在登录前验证 `fighter-era.cloud-context`（META），登录后先发送已有 outbox 再读取当前账号。首次导入必须同时满足 META 为空、outbox 的 `accountId` 为 `null`、服务端 `migrationAllowed=true`；只有从未绑定账号的本机记录有资格导入。已绑定账号的本机镜像永不再次导入，切换账号和同账号重登均不得放宽。成功 prepare 必须先同步写 META 绑定身份，再由入口写云档镜像；上下文校验、队列发送或绑定写入失败都停止入口并保留原本机记录，不能把中断写入后的云档误判为未绑定本机记录。
+- 对局 `stage` 和 checkpoint `stage` 从 0 到 99；`stageResults.stage` 与 `highestClearedStage` 从 1 到 100。失败或胜利的对局不可再修改；新开与续关都使用新 `run.id`。同一对局同一关最多计一次通关；恢复升级选择不把上一对局的 BOSS 再算一次通关。终局快照必须在下一局开始前同步入队，不能让下一局覆盖终局。
+- 云待发送队列使用 `fighter-era.cloud-outbox`，上下文使用 `fighter-era.cloud-context`。每次 progression、checkpoint、终局以及切后台都先同步保存队列；请求在边界或每 10 秒异步发送，未知结果保留原 `mutationId` 与正文重试。队列最多保留 100 个待同步对局，不能静默丢弃超限记录。存储失败、账号不匹配、版本冲突和网络错误都必须可见；网络重试显示次数。`apiBase` 已配置但云登录失败时明确提示错误并停止开局，避免新进度后来被旧云档覆盖；只有空 `apiBase` 才是默认本机模式。已有云账号与本机经验不自动相加。
+- 每关免费技能不是账号库存，不发道具流水。额外 `bomb / support` 库存通过事务扣除并记录 `inventory_ledger`，游戏先暂停、收到扣除确认后才使用；网络结果未知时保留请求，不能再次扣除或假装成功。库存与存档版本分别维护，普通存档不能修改库存。
+- 已建立支付订单与广告奖励记录表及内部幂等发放方法；付款、广告播放、回调验签、充值商品、广告位和外部发奖接口均未启用。后续必须先确定平台能力与服务端验证流程；不能因客户端自称付款成功或看完广告就发道具，不能把预留结构描述为已开通充值。
+- 服务启动前执行事务迁移并核验摘要，失败即停止；已应用迁移不得改写。日志保留请求编号、内部用户编号、对局编号和版本，不记录 AppSecret、token、登录 code 或授权头。`GET /health/ready` 可报告数据库 ready 同时微信 pending_configuration，不能据此宣称真实微信登录已可用。
+
+## 独立服务器与备份
+
+- 服务专用目录为 `/opt/fighter-era`，Compose 配置位于 `/opt/fighter-era/deploy`，项目名 `fighter-era`。**绝不修改 `/opt/learning-workbench` 或其应用、数据库、配置与运行服务**；所有部署和备份操作仅针对战机时代自己的 Compose 项目、卷与目录。
+- API 容器监听 4317，宿主机仅发布 `127.0.0.1:8088`；PostgreSQL 17 不发布宿主机端口。当前没有公网 HTTPS 接入，后续由网关转发到回环 8088。配置放 `deploy/.env` 并限制为 600；数据库用独立随机凭据，应用数据库角色不是超级用户。不要提交 `.env`、密钥、日志或备份。
+- 运行、健康检查、更新、备份与独立恢复演练按 [部署说明](deploy/README.md)。`deploy/backup.sh` 用 `pg_dump --format=custom` 写 `/opt/fighter-era/backups`，只在成功且非空后把 `.partial` 改为正式备份。每日计时器由服务器 systemd 管理，备份失败必须可查日志。已有备份文件不等于验证过恢复或异机容灾；新验证结果应明确记录其范围。
 
 ## 运行与检查
 
 `npm start` → `node server.js`，仅绑定 `127.0.0.1:4173`；允许 `PORT` 覆盖。端口占用必须报错，不可静默切换。静态服务必须拒绝路径穿越和根目录外文件。
 
-`npm run check` 检查所有入口语法。`npm test` 使用 Node 内置执行器运行 `tests/*.test.js`。修改战斗逻辑时维护确定性引擎测试；界面或输入改动后检查实际浏览器中的开始、移动、暂停、升级、失败 / 胜利和键盘按钮。微信适配必须单独在开发者工具及真机上验证，不能将浏览器通过写成微信通过。
+`npm run check` 检查客户端入口语法。`npm test` 使用 Node 内置执行器运行 `tests/*.test.js`。后端需要 Node.js 22：`npm --prefix backend ci`、`npm --prefix backend run check`、`npm --prefix backend test`。真实 PostgreSQL 测试另提供 `TEST_DATABASE_URL`，数据库名称必须以 `_test` 结尾；未设置时明确跳过，不能宣称集成测试通过。客户端不需要安装后端依赖即可试玩。修改战斗逻辑时维护确定性引擎测试；界面或输入改动后检查实际浏览器中的开始、续关、移动、暂停、升级、失败 / 胜利和键盘按钮。微信适配必须单独在开发者工具及真机上验证，不能将浏览器通过写成微信通过。
 
 ## 错误与诊断
 
@@ -43,6 +65,10 @@
 微信版目前无音频。`project.config.json` 中 AppID 由开发者工具和项目账号管理，不要用 `touristappid` 覆盖用户已选定的测试号或正式 AppID；测试身份不能代替正式发布身份。变更平台契约、运行方式、验证范围或长期规则时，同步更新本文件和 README。
 
 当前浏览器已实测战斗升到 2 级、刷新保留等级与经验，以及 320 / 390 像素宽度布局。微信开发者工具已确认编译、菜单渲染、点击出击、实战自动射击、战舰出现和升到 3 级后的外观变化；重新编译后菜单保留经验。已在模拟器实测单指相对拖动；多指、边缘触控仍需专项核验，尚未完成真机兼容或发布审核验证。后续测试完成后更新此范围，不能扩大描述。
+
+当前新增续关与云存档版本通过客户端 125 项自动测试（0 失败、0 跳过），包含账号隔离、首次迁移、登录失败停止开局、待同步记录持久化与道具扣除确认。在浏览器实测「开局 → 暂停 → 回机库 → 刷新」，菜单仍显示「继续第 1 关」，控制台无警告或错误。后端已在服务器独立测试库通过 23 项测试（7 项单元、16 项 PostgreSQL，0 跳过），备份恢复与既有应用保护检查见 [部署说明](deploy/README.md)。测试与恢复库已清理，生产库没有保留测试用户。
+
+下面记录的是此前本地游戏版本的验证；客户端当前自动化结果以执行报告为准。真实微信账号登录、HTTPS 域名请求、跨设备恢复、支付、广告和真机续关尚未验证，API 模拟或数据库测试不能替代这些验证。
 
 此前素材接入通过 42 项自动检查。浏览器 390 × 844 实测新图集战机、敌机、子弹、自动射击、暂停与等级变化；微信开发者工具实测新图集菜单中的 Lv.9 战机、实战敌机与战舰、自动射击、单指相对拖动及暂停。
 

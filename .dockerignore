@@ -1,0 +1,10 @@
+**/node_modules
+.git
+**/.env
+**/.env.*
+!**/.env.example
+assets
+tests
+backups
+**/*.dump
+project.private.config.json

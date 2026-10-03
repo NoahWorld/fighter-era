@@ -1,9 +1,10 @@
 'use strict';
 
 // WeChat Mini Game entry. The browser entry lives in src/browser.js.
-const { Game, WIDTH, HEIGHT } = require('./src/engine.js');
+const { Game, WIDTH, HEIGHT, validateCheckpoint } = require('./src/engine.js');
 const { Renderer } = require('./src/renderer.js');
 const { loadAssets } = require('./src/assets.js');
+const { WechatCloud } = require('./src/wechat-cloud.js');
 const canvas = wx.createCanvas();
 const ctx = canvas.getContext('2d');
 let game;
@@ -18,10 +19,17 @@ let viewport;
 let loadingMessage = '正在加载战机与弹药素材…';
 const profileKey = 'fighter-era.profile';
 const bestScoreKey = 'neon-wing.best-score';
+const checkpointKey = 'fighter-era.checkpoint';
 let bestScoreStorageAvailable = true;
 let profileStorageAvailable = true;
+let checkpointStorageAvailable = true;
 let savedBestScore = 0;
 const diagnostics = [];
+let cloudStatus;
+const cloud = new WechatCloud(wx, status => {
+  cloudStatus = status;
+  console.info('[Fighter Era / cloud-status]', { state: status.state, message: status.message, retry: status.retry });
+});
 
 function report(message, error) {
   diagnostics.push({ message, detail: error && error.message });
@@ -55,6 +63,12 @@ function saveBestScore() {
   if (!bestScoreStorageAvailable) return;
   try { wx.setStorageSync(bestScoreKey, savedBestScore); }
   catch (error) { bestScoreStorageAvailable = false; report('最高分保存失败，本次成绩仅暂存', error); }
+}
+
+function saveCheckpoint() {
+  if (!checkpointStorageAvailable) return;
+  try { wx.setStorageSync(checkpointKey, game.getCheckpoint()); }
+  catch (error) { checkpointStorageAvailable = false; report('续关记录保存失败，请勿关闭游戏', error); }
 }
 
 function resize() {
@@ -129,12 +143,14 @@ function pointFor(touch) {
 
 function activate(id) {
   if (!ready || stopped) return;
-  if (id === 'start' || id === 'restart') game.start();
+  if (cloud.usingInventory) return;
+  if (id === 'start' || id === 'restart') { cloud.beginRun(false); game.start(); }
+  else if (id === 'continue') { cloud.beginRun(true); game.continueRun(); }
   else if (id === 'pause') game.pause();
   else if (id === 'resume') { previousTime = null; game.resume(); }
-  else if (id === 'home') game.home();
-  else if (id === 'support') game.callSupport();
-  else if (id === 'bomb') game.useBomb();
+  else if (id === 'home') { cloud.endRun(); game.home(); }
+  else if (id === 'support') { if (game.supportCharges > 0) game.callSupport(); else void cloud.useInventory('support'); }
+  else if (id === 'bomb') { if (game.bombCharges > 0) game.useBomb(); else void cloud.useInventory('bomb'); }
   else if (id.startsWith('upgrade:')) game.chooseUpgrade(id.slice(8));
   else throw new Error(`未知微信界面按钮：${id}`);
 }
@@ -159,6 +175,7 @@ function frame(timestamp) {
       dt = 0;
     }
     game.update(dt);
+    cloud.tick(dt);
     if (game.state !== 'playing' && touchSession && touchSession.mode === 'drag') touchSession = null;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#060d19';
@@ -169,6 +186,15 @@ function frame(timestamp) {
     ctx.rect(0, 0, WIDTH, HEIGHT);
     ctx.clip();
     renderer.draw(game, timestamp / 1000);
+    if (cloudStatus) {
+      const failed = cloudStatus.state === 'error' || cloudStatus.state === 'conflict';
+      const label = failed ? `🔴 ${cloudStatus.message} · 重试 ${cloudStatus.retry || 0}` : cloudStatus.message;
+      ctx.fillStyle = failed ? '#30151de8' : '#06111ecc';
+      ctx.fillRect(0, HEIGHT - 18, WIDTH, 18);
+      ctx.fillStyle = failed ? '#ffadad' : '#8babbf';
+      ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, WIDTH / 2, HEIGHT - 9, WIDTH - 12);
+    }
     if (!profileStorageAvailable || !bestScoreStorageAvailable) {
       ctx.fillStyle = '#201d22ed';
       ctx.fillRect(0, HEIGHT - 25, WIDTH, 25);
@@ -207,13 +233,42 @@ async function initialize() {
         profile = { version: 1, totalXp: value.totalXp };
       }
     } catch (error) { profileStorageAvailable = false; report('档案不可用，原档保留，本次成长不保存', error); }
+    let checkpoint = null;
+    try {
+      const stored = wx.getStorageSync(checkpointKey);
+      if (stored !== '') checkpoint = validateCheckpoint(stored);
+    } catch (error) { checkpointStorageAvailable = false; report('续关记录不可用，原记录不会覆盖', error); }
+    if (cloud.configured) {
+      try {
+        resize();
+        drawLoading('正在登录并读取云存档…');
+        const account = await cloud.prepare({ profile, bestScore, checkpoint });
+        profile = account.profile; bestScore = account.bestScore; checkpoint = account.checkpoint;
+      } catch (error) {
+        console.error('[Fighter Era / cloud-login]', { code: error.code, message: error.message });
+        cloud.publish({ state: 'error', message: '云登录失败，已停止开局以保护存档：' + error.message, retry: 1 });
+        throw error;
+      }
+    }
     const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'upgrade', 'levelup', 'gameover', 'victory']);
     game = new Game({ profile, bestScore, onEvent: (name, payload) => {
       if (name === 'progression') saveProfile();
+      if (name === 'checkpoint') saveCheckpoint();
       if (name === 'gameover' || name === 'victory') saveBestScore();
+      cloud.event(name, payload);
       if (loggedEvents.has(name)) console.info(`[Fighter Era / ${name}]`, { state: game && game.state, stage: game && game.stage, score: game && game.score, payload });
     } });
-    GameGlobal.fighterEra = { game, renderer: null, diagnostics, ready: false };
+    game.setSavedCheckpoint(checkpoint);
+    cloud.bind(game);
+    if (cloud.account) {
+      saveProfile(); saveCheckpoint();
+      savedBestScore = bestScore;
+      if (bestScoreStorageAvailable) {
+        try { wx.setStorageSync(bestScoreKey, bestScore); }
+        catch (error) { bestScoreStorageAvailable = false; report('云端最高分写入本机失败', error); }
+      }
+    }
+    GameGlobal.fighterEra = { game, renderer: null, diagnostics, cloud, ready: false };
     GameGlobal.neonWing = GameGlobal.fighterEra;
     resize();
     drawLoading();
@@ -221,12 +276,15 @@ async function initialize() {
     wx.onHide(() => {
       hidden = true;
       suspend();
+      try { cloud.flushOnHide(); }
+      catch (error) { report('云同步队列保存失败，请保留游戏数据', error); }
       if (frameId !== null) cancelAnimationFrame(frameId);
       frameId = null;
     });
     wx.onShow(() => {
       hidden = false;
       previousTime = null;
+      cloud.flushSoon();
       if (ready && !stopped && frameId === null) frameId = requestAnimationFrame(frame);
     });
     wx.onWindowResize(() => {

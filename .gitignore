@@ -1,3 +1,10 @@
 # WeChat Developer Tools keeps local editor and simulator preferences here.
 project.private.config.json
 .DS_Store
+node_modules/
+.env
+.env.*
+!.env.example
+*.dump
+backups/
+*.log
