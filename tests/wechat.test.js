@@ -189,7 +189,7 @@ async function simulateWechatApi(options = {}) {
     assert.equal(modals.length, 0, modals.map(modal => modal.content).join('\n'));
     assert.equal(sandbox.GameGlobal.fighterEra.ready, true, 'initialization must wait for decoded images');
   }
-  return { game, frame, touch, press, release, handlers, canvas, diagnostics, toasts, storage, writes, images, modals, loadingMessages, loadImages, logs, packageRequests, completePackage, failPackage, expirePackage,
+  return { game, cloud: sandbox.GameGlobal.fighterEra.cloud, frame, touch, press, release, handlers, canvas, diagnostics, toasts, storage, writes, images, modals, loadingMessages, loadImages, logs, packageRequests, completePackage, failPackage, expirePackage,
     get ready() { return sandbox.GameGlobal.fighterEra.ready; },
     get hasFrame() { return queuedFrame !== null; }
   };
@@ -205,7 +205,7 @@ function finishLaunch(game) {
 
 test('WeChat API simulation: configured cloud login failures stop visibly and preserve local records without playable fallback', async () => {
   const { Game } = require('../src/engine.js');
-  const previous = new Game({ profile: { version: 1, totalXp: 700 } });
+  const previous = new Game();
   previous.start();
   const saved = new Map([
     ['fighter-era.profile', { version: 1, totalXp: 700 }],
@@ -320,82 +320,188 @@ test('WeChat API simulation: unexpected gaps over 250 ms pause visibly without a
   assert.ok(Math.abs(app.game.totalTime - beforeGap - 0.1) < 1e-8);
 });
 
-test('WeChat API simulation: experience saves immediately and restores ship growth after reload', async () => {
+const RUN_KEY = 'fighter-era.run.v2';
+
+function aliveRecord(totalXp = 59) {
+  const { Game } = require('../src/engine.js');
+  const previous = new Game();
+  previous.start();
+  const checkpoint = previous.getCheckpoint();
+  checkpoint.totalXp = totalXp;
+  return { version: 2, profile: { version: 2, totalXp }, checkpoint };
+}
+
+test('WeChat API simulation: legacy permanent growth is ignored while the historical best score remains', async () => {
+  const oldProfile = { version: 1, totalXp: 700 };
+  const oldCheckpoint = { version: 1, stage: 28 };
   const storage = new Map([
-    ['fighter-era.profile', { version: 1, totalXp: 59 }],
-    ['neon-wing.best-score', 200]
+    ['fighter-era.profile', oldProfile], ['fighter-era.checkpoint', oldCheckpoint], ['neon-wing.best-score', 2300]
   ]);
   const app = await simulateWechatApi({ storage });
-  assert.equal(app.game.getProfile().totalXp, 59);
-  assert.equal(app.game.bestScore, 200);
-  app.press('start');
-  finishLaunch(app.game);
-  app.release();
-  app.game.addExperience(1);
-  assert.deepEqual(storage.get('fighter-era.profile'), { version: 1, totalXp: 60 }, 'the progression event must persist without waiting for an animation frame');
-  assert.equal(app.game.player.shipLevel, 2);
-  app.game.addExperience(105);
-  assert.deepEqual(storage.get('fighter-era.profile'), { version: 1, totalXp: 165 });
-  assert.equal(app.writes.filter(write => write.key === 'fighter-era.profile').length, 2);
-  app.game.home();
-  app.game.start();
-  assert.equal(app.game.getProfile().totalXp, 165);
-  app.frame(0);
-  assert.equal(app.diagnostics.length, 0);
-
+  assert.equal(app.game.progression.level, 1);
+  assert.equal(app.game.getCheckpoint(), null);
+  assert.equal(app.game.bestScore, 2300);
+  assert.deepEqual(storage.get('fighter-era.profile'), oldProfile);
+  assert.deepEqual(storage.get('fighter-era.checkpoint'), oldCheckpoint);
+  assert.deepEqual(storage.get(RUN_KEY), { version: 2, profile: { version: 2, totalXp: 0 }, checkpoint: null });
+  assert.ok(app.toasts.some(toast => /肉鸽规则已启用/.test(toast.title)));
   const reloaded = await simulateWechatApi({ storage });
-  assert.equal(reloaded.game.progression.level, 3);
-  assert.equal(reloaded.game.progression.tier, 2);
-  assert.equal(reloaded.game.progression.xp, 5);
-  assert.equal(reloaded.game.player.shipLevel, 3);
-  assert.equal(reloaded.game.getProfile().totalXp, 165);
+  assert.equal(reloaded.toasts.length, 0, 'rule transition notice is shown only on first adoption');
+  assert.equal(reloaded.game.continueRun(), false, 'legacy defeated checkpoints cannot offer resurrection');
 });
 
-test('WeChat API simulation: corrupt profiles warn visibly and are never overwritten by new progress', async () => {
-  for (const corrupted of [
-    { version: 2, totalXp: 60 }, { version: 1, totalXp: -1 },
-    { version: 1, totalXp: Number.MAX_SAFE_INTEGER + 1 }, '{broken-json', null
-  ]) {
-    const storage = new Map([['fighter-era.profile', corrupted]]);
+test('WeChat API simulation: alive checkpoints restore boundary growth and starting a new expedition resets it', async () => {
+  const storage = new Map([[RUN_KEY, aliveRecord(165)], ['neon-wing.best-score', 200]]);
+  const app = await simulateWechatApi({ storage });
+  assert.equal(app.game.progression.level, 3);
+  assert.equal(app.game.getProfile().totalXp, 165);
+  app.press('continue');
+  finishLaunch(app.game);
+  app.release();
+  app.game.addExperience(10);
+  assert.equal(storage.get(RUN_KEY).profile.totalXp, 175, 'progress is durably written without waiting for a frame');
+  assert.equal(storage.get(RUN_KEY).checkpoint.totalXp, 165, 'interrupted waves resume their original boundary experience');
+  app.game.pause();
+  app.press('home');
+  app.release();
+  const reloaded = await simulateWechatApi({ storage });
+  assert.equal(reloaded.game.progression.level, 3);
+  assert.equal(reloaded.game.getProfile().totalXp, 165);
+  assert.ok(reloaded.game.getCheckpoint());
+  reloaded.press('start');
+  reloaded.release();
+  assert.equal(reloaded.game.getProfile().totalXp, 0);
+  assert.equal(reloaded.game.progression.level, 1);
+  assert.equal(reloaded.game.stage, 0);
+  assert.equal(storage.get(RUN_KEY).checkpoint.totalXp, 0);
+  assert.equal(reloaded.game.bestScore, 200);
+});
+
+test('WeChat API simulation: lethal damage immediately invalidates continuation before ejection or page reload', async () => {
+  const storage = new Map([[RUN_KEY, aliveRecord(165)], ['neon-wing.best-score', 200]]);
+  const app = await simulateWechatApi({ storage });
+  app.press('continue');
+  app.release();
+  finishLaunch(app.game);
+  app.game.addExperience(30);
+  app.game.player.hp = 1;
+  app.game.player.invincible = 0;
+  app.game.hurt();
+  assert.equal(app.game.state, 'ejecting');
+  assert.equal(app.game.getCheckpoint(), null);
+  assert.equal(app.game.progression.level, 1);
+  assert.deepEqual(storage.get(RUN_KEY), { version: 2, profile: { version: 2, totalXp: 0 }, checkpoint: null });
+  const reloaded = await simulateWechatApi({ storage });
+  assert.equal(reloaded.game.continueRun(), false);
+  assert.equal(reloaded.game.getProfile().totalXp, 0);
+  assert.equal(reloaded.game.bestScore, 200);
+  reloaded.press('start');
+  reloaded.release();
+  assert.equal(reloaded.game.stage, 0);
+  assert.equal(reloaded.game.progression.level, 1);
+});
+
+test('WeChat API simulation: terminal local saves precede a synchronous cloud outbox failure', async () => {
+  for (const outcome of ['defeated', 'victory']) {
+    const storage = new Map([[RUN_KEY, aliveRecord(165)], ['neon-wing.best-score', 200]]);
     const app = await simulateWechatApi({ storage });
-    assert.ok(app.toasts.length > 0, 'corruption must be visible to the player');
-    assert.ok(app.diagnostics.length > 0, 'corruption must leave diagnostic evidence');
-    assert.equal(app.game.getProfile().totalXp, 0, 'invalid persisted values cannot enter the simulation');
-    app.game.start();
-    app.game.addExperience(10);
-    app.frame(0);
-    assert.deepEqual(storage.get('fighter-era.profile'), corrupted);
-    assert.equal(app.writes.filter(write => write.key === 'fighter-era.profile').length, 0);
+    app.press('continue');
+    app.release();
+    finishLaunch(app.game);
+    app.game.score = 875;
+    // Use the real bridge event path; the persistence seam fails exactly where
+    // its CloudSave client would synchronously write the outbox.
+    app.cloud.account = { user: { id: 'cloud-user' } };
+    app.cloud.running = true;
+    app.cloud.context = { version: 2, userId: 'cloud-user', runId: 'run-id',
+      status: 'active', highestClearedStage: 0, stageResults: [] };
+    app.cloud.client = { enqueue() { throw new Error('Simulated cloud outbox storage failure'); } };
+    if (outcome === 'defeated') {
+      app.game.player.hp = 1;
+      app.game.player.invincible = 0;
+      assert.throws(() => app.game.hurt(), /Simulated cloud outbox storage failure/);
+      assert.equal(app.game.state, 'ejecting');
+    } else {
+      assert.throws(() => app.game.finish('victory'), /Simulated cloud outbox storage failure/);
+      assert.equal(app.game.state, 'victory');
+    }
+    assert.deepEqual(storage.get(RUN_KEY), { version: 2, profile: { version: 2, totalXp: 0 }, checkpoint: null });
+    assert.equal(storage.get('neon-wing.best-score'), 875);
+    const reloaded = await simulateWechatApi({ storage });
+    assert.equal(reloaded.game.continueRun(), false);
+    assert.equal(reloaded.game.progression.level, 1);
+    assert.equal(reloaded.game.bestScore, 875);
   }
 });
 
-test('WeChat API simulation: failed profile writes warn once and retain the old record', async () => {
-  const storage = new Map([['fighter-era.profile', { version: 1, totalXp: 59 }]]);
-  const writeFailures = new Set(['fighter-era.profile']);
+test('WeChat API simulation: victory clears continuation before immediate restart or reload', async () => {
+  const storage = new Map([[RUN_KEY, aliveRecord(165)]]);
+  const app = await simulateWechatApi({ storage });
+  app.press('continue'); app.release(); finishLaunch(app.game);
+  app.game.score = 875;
+  app.game.finish('victory');
+  assert.deepEqual(storage.get(RUN_KEY), { version: 2, profile: { version: 2, totalXp: 0 }, checkpoint: null });
+  assert.equal((await simulateWechatApi({ storage })).game.continueRun(), false);
+  app.press('restart'); app.release();
+  assert.equal(app.game.stage, 0);
+  assert.equal(app.game.progression.level, 1);
+  assert.equal(app.game.bestScore, 875);
+  assert.equal(storage.get(RUN_KEY).checkpoint.stage, 0);
+  assert.equal(storage.get(RUN_KEY).checkpoint.totalXp, 0);
+  const reloaded = await simulateWechatApi({ storage });
+  assert.equal(reloaded.game.stage, 0);
+  assert.equal(reloaded.game.progression.level, 1);
+  assert.equal(reloaded.game.bestScore, 875);
+});
+
+test('WeChat API simulation: corrupt run envelopes warn visibly and are never overwritten', async () => {
+  for (const corrupted of [
+    { version: 1, profile: { version: 1, totalXp: 60 }, checkpoint: null },
+    { version: 2, profile: { version: 2, totalXp: -1 }, checkpoint: null },
+    { version: 2, profile: { version: 2, totalXp: Number.MAX_SAFE_INTEGER + 1 }, checkpoint: null },
+    { version: 2, profile: { version: 2, totalXp: 60 }, checkpoint: null },
+    '{broken-json', null
+  ]) {
+    const storage = new Map([[RUN_KEY, corrupted]]);
+    const app = await simulateWechatApi({ storage });
+    assert.ok(app.toasts.length > 0);
+    assert.ok(app.diagnostics.length > 0);
+    assert.equal(app.game.getProfile().totalXp, 0);
+    app.game.start();
+    app.game.addExperience(10);
+    app.frame(0);
+    assert.deepEqual(storage.get(RUN_KEY), corrupted);
+    assert.equal(app.writes.filter(write => write.key === RUN_KEY).length, 0);
+  }
+});
+
+test('WeChat API simulation: failed atomic run writes remain visible while best scores still persist', async () => {
+  const original = aliveRecord(59);
+  const storage = new Map([[RUN_KEY, original]]);
+  const writeFailures = new Set([RUN_KEY]);
   const app = await simulateWechatApi({ storage, writeFailures });
-  app.game.start();
-  app.game.addExperience(1);
-  assert.equal(app.game.getProfile().totalXp, 60, 'a storage failure must not undo earned session progress');
-  assert.deepEqual(storage.get('fighter-era.profile'), { version: 1, totalXp: 59 });
+  app.press('continue');
+  app.release();
+  assert.deepEqual(storage.get(RUN_KEY), original);
   assert.ok(app.toasts.length > 0);
   assert.ok(app.diagnostics.some(item => String(item.detail).includes('Simulated storage write failure')));
   const warningCount = app.toasts.length;
-  writeFailures.delete('fighter-era.profile');
+  const attempts = app.writes.filter(write => write.key === RUN_KEY).length;
+  writeFailures.delete(RUN_KEY);
   app.game.addExperience(1);
   app.frame(0);
-  assert.equal(app.writes.filter(write => write.key === 'fighter-era.profile').length, 1, 'the failed profile key remains disabled for this session');
+  assert.equal(app.writes.filter(write => write.key === RUN_KEY).length, attempts, 'the failed run record remains disabled for this session');
   assert.equal(app.toasts.length, warningCount);
-  assert.deepEqual(storage.get('fighter-era.profile'), { version: 1, totalXp: 59 });
-
+  assert.deepEqual(storage.get(RUN_KEY), original);
   app.game.score = 500;
   app.game.finish('gameover');
-  assert.equal(storage.get('neon-wing.best-score'), 500, 'an independent healthy record must still save immediately');
+  assert.equal(storage.get('neon-wing.best-score'), 500);
 });
 
-test('WeChat API simulation: an unreadable profile is preserved while other storage keys remain usable', async () => {
-  const saved = { version: 1, totalXp: 700 };
-  const storage = new Map([['fighter-era.profile', saved], ['neon-wing.best-score', 200]]);
-  const app = await simulateWechatApi({ storage, readFailures: new Set(['fighter-era.profile']) });
+test('WeChat API simulation: an unreadable run is preserved while the best score remains usable', async () => {
+  const saved = aliveRecord(700);
+  const storage = new Map([[RUN_KEY, saved], ['neon-wing.best-score', 200]]);
+  const app = await simulateWechatApi({ storage, readFailures: new Set([RUN_KEY]) });
   assert.equal(app.game.bestScore, 200);
   assert.ok(app.toasts.length > 0);
   assert.ok(app.diagnostics.some(item => String(item.detail).includes('Simulated storage read failure')));
@@ -403,8 +509,8 @@ test('WeChat API simulation: an unreadable profile is preserved while other stor
   app.game.addExperience(60);
   app.game.score = 700;
   app.game.finish('gameover');
-  assert.deepEqual(storage.get('fighter-era.profile'), saved);
-  assert.equal(app.writes.filter(write => write.key === 'fighter-era.profile').length, 0);
+  assert.deepEqual(storage.get(RUN_KEY), saved);
+  assert.equal(app.writes.filter(write => write.key === RUN_KEY).length, 0);
   assert.equal(storage.get('neon-wing.best-score'), 700);
 });
 
@@ -558,7 +664,7 @@ test('WeChat API simulation: launch animation blocks combat and resumes from bac
   assert.equal(app.diagnostics.length, 0);
 });
 
-test('WeChat API simulation: ejection pauses safely and delays result persistence until animation ends', async () => {
+test('WeChat API simulation: ejection pauses safely and delays the result screen while saving the best score immediately', async () => {
   const app = await simulateWechatApi();
   app.press('start');
   app.release();
@@ -570,7 +676,7 @@ test('WeChat API simulation: ejection pauses safely and delays result persistenc
   app.game.enemyBullets.push({ x: app.game.player.x, y: app.game.player.y, vx: 0, vy: 0, r: 4 });
   app.frame(100);
   assert.equal(app.game.state, 'ejecting');
-  assert.equal(app.storage.has('neon-wing.best-score'), false);
+  assert.equal(app.storage.get('neon-wing.best-score'), 875);
   app.frame(200);
   const elapsed = app.game.cinematicTime;
   app.frame(600);
@@ -643,7 +749,7 @@ test('WeChat API simulation: bomb clears enemies, preserves loot, and persists e
   assert.equal(app.game.enemies.length, 0);
   assert.equal(app.game.enemyBullets.length, 0);
   assert.ok(app.game.pickups.includes(repair) && app.game.pickups.includes(power));
-  assert.ok(app.storage.get('fighter-era.profile').totalXp > 0, 'bomb rewards must save on the progression event');
+  assert.ok(app.storage.get(RUN_KEY).profile.totalXp > 0, 'bomb rewards must save on the progression event');
   const score = app.game.score;
   const writes = app.writes.length;
   app.press('bomb');

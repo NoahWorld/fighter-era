@@ -5,6 +5,7 @@
   'use strict';
 
   const STORAGE_KEY = 'fighter-era.cloud-outbox';
+  const LEGACY_STORAGE_KEY = 'fighter-era.cloud-outbox.legacy-v1';
   const SNAPSHOT_FIELDS = ['profile', 'bestScore', 'highestClearedStage', 'checkpoint', 'run', 'stageResults'];
 
   class CloudSaveError extends Error {
@@ -36,8 +37,8 @@
   function identifier(value, path) {
     if (typeof value !== 'string' || value.length < 1 || value.length > 160) throw new TypeError(path + ' must be a non-empty identifier');
   }
-  function profile(value) {
-    if (!value || value.version !== 1) throw new TypeError('Cloud profile version must be 1');
+  function profile(value, version = 2) {
+    if (!value || value.version !== version) throw new TypeError('Cloud profile version must be ' + version);
     integer(value.totalXp, 'profile.totalXp');
   }
   function inventory(value) {
@@ -45,15 +46,18 @@
     integer(value.bomb, 'inventory.bomb');
     integer(value.support, 'inventory.support');
   }
-  function snapshot(value) {
+  function snapshot(value, version = 2) {
     const copy = jsonCopy(value, 'snapshot');
     if (!copy || Array.isArray(copy)) throw new TypeError('Cloud snapshot must be an object');
     for (const key of SNAPSHOT_FIELDS) if (!Object.prototype.hasOwnProperty.call(copy, key)) throw new TypeError('Cloud snapshot is missing ' + key);
-    profile(copy.profile);
+    profile(copy.profile, version);
     integer(copy.bestScore, 'bestScore');
     integer(copy.highestClearedStage, 'highestClearedStage');
     if (copy.highestClearedStage > 100) throw new RangeError('highestClearedStage exceeds the campaign length');
     if (copy.checkpoint !== null && (typeof copy.checkpoint !== 'object' || Array.isArray(copy.checkpoint))) throw new TypeError('checkpoint must be an object or null');
+    if (version === 2 && copy.checkpoint !== null && (copy.checkpoint.version !== 2 || !Number.isSafeInteger(copy.checkpoint.totalXp) || copy.checkpoint.totalXp < 0 || copy.checkpoint.totalXp > copy.profile.totalXp || copy.checkpoint.runStartXp !== 0)) throw new TypeError('Roguelike checkpoint requires version 2 and valid boundary XP');
+    if (version === 2 && copy.checkpoint === null && copy.profile.totalXp !== 0) throw new TypeError('Roguelike XP requires a living checkpoint');
+    if (version === 2 && copy.run && ['defeated', 'victory'].includes(copy.run.status) && (copy.checkpoint !== null || copy.profile.totalXp !== 0)) throw new TypeError('Ended roguelike runs must clear XP and checkpoint');
     if (copy.run !== null && (typeof copy.run !== 'object' || Array.isArray(copy.run))) throw new TypeError('run must be an object or null');
     if (!Array.isArray(copy.stageResults) || copy.stageResults.some(result => !result || typeof result !== 'object' || Array.isArray(result))) throw new TypeError('stageResults must be an array of objects');
     const selected = {};
@@ -70,18 +74,20 @@
     integer(copy.highestClearedStage, 'account.highestClearedStage');
     if (copy.highestClearedStage > 100) throw new RangeError('Cloud account has an invalid cleared stage');
     if (copy.checkpoint !== null && (!copy.checkpoint || typeof copy.checkpoint !== 'object' || Array.isArray(copy.checkpoint))) throw new TypeError('Cloud account checkpoint must be an object or null');
+    if (copy.checkpoint !== null && (copy.checkpoint.version !== 2 || !Number.isSafeInteger(copy.checkpoint.totalXp) || copy.checkpoint.totalXp < 0 || copy.checkpoint.totalXp > copy.profile.totalXp || copy.checkpoint.runStartXp !== 0)) throw new TypeError('Cloud account contains a legacy or invalid roguelike checkpoint');
+    if (copy.checkpoint === null && copy.profile.totalXp !== 0) throw new TypeError('Cloud account without a living checkpoint must have zero XP');
     inventory(copy.inventory);
     if (typeof copy.migrationAllowed !== 'boolean') throw new TypeError('Cloud account migrationAllowed must be boolean');
     return copy;
   }
   function emptyOutbox() {
-    return { version: 1, accountId: null, pending: null, queue: [], consumption: null, conflict: null };
+    return { version: 2, accountId: null, pending: null, queue: [], consumption: null, conflict: null };
   }
   function hasWork(box) { return !!(box.pending || box.queue.length || box.consumption); }
   function readOutbox(value) {
     if (value === undefined || value === null || value === '') return emptyOutbox();
     const box = jsonCopy(typeof value === 'string' ? JSON.parse(value) : value, 'outbox');
-    if (!box || box.version !== 1) throw new TypeError('Cloud outbox version must be 1');
+    if (!box || ![1, 2].includes(box.version)) throw new TypeError('Cloud outbox version must be 1 or 2');
     for (const key of ['accountId', 'pending', 'queue', 'consumption', 'conflict']) if (!Object.prototype.hasOwnProperty.call(box, key)) throw new TypeError('Cloud outbox is missing ' + key);
     if (!Array.isArray(box.queue) || box.queue.length > 100) throw new TypeError('Cloud outbox queue must contain at most 100 runs');
     if (box.accountId !== null) identifier(box.accountId, 'outbox.accountId');
@@ -92,14 +98,14 @@
       integer(box.pending.attempts, 'outbox.pending.attempts');
       if (box.pending.kind === 'save') {
         integer(box.pending.body.expectedRevision, 'outbox.pending.expectedRevision');
-        snapshot(box.pending.body);
+        snapshot(box.pending.body, box.version);
       } else {
-        profile(box.pending.body.profile);
+        profile(box.pending.body.profile, box.version);
         integer(box.pending.body.bestScore, 'outbox.pending.bestScore');
         jsonCopy(box.pending.body.checkpoint, 'outbox.pending.checkpoint');
       }
     }
-    for (const queued of box.queue) snapshot(queued);
+    for (const queued of box.queue) snapshot(queued, box.version);
     if (box.consumption !== null) {
       if (!box.consumption || !['bomb', 'support'].includes(box.consumption.item)) throw new TypeError('Invalid pending inventory item');
       identifier(box.consumption.mutationId, 'outbox.consumption.mutationId');
@@ -130,6 +136,19 @@
       this._status = { state: 'pending', message: '等待微信登录', retry: 0 };
       try { this._box = readOutbox(this.storage.get(STORAGE_KEY)); }
       catch (cause) { throw new CloudSaveError('OUTBOX_READ_FAILED', '无法读取云存档待同步记录，已停止云同步以保护原数据', { cause }); }
+      if (this._box.version === 1) {
+        const legacy = this._box;
+        const migrated = emptyOutbox();
+        migrated.accountId = legacy.accountId; migrated.consumption = legacy.consumption;
+        try {
+          const archive = this.storage.get(LEGACY_STORAGE_KEY);
+          if (archive !== undefined && archive !== null && archive !== '' && JSON.stringify(readOutbox(archive)) !== JSON.stringify(legacy)) throw new Error('Existing legacy archive differs from the pending version 1 outbox');
+          this.storage.set(LEGACY_STORAGE_KEY, legacy);
+          this.storage.set(STORAGE_KEY, migrated);
+        } catch (cause) { throw new CloudSaveError('OUTBOX_MIGRATION_FAILED', '无法迁移旧版待同步记录，原记录保留，已停止启动', { cause }); }
+        this._box = migrated;
+        this._notify('pending', '肉鸽规则已更新：旧版经验和续关已归档，道具操作保留');
+      }
     }
     _notify(state, message, extra = {}) {
       this._status = Object.assign({ state, message, retry: 0 }, extra);
@@ -242,6 +261,8 @@
       if (!this._account.migrationAllowed) throw new CloudSaveError('IMPORT_NOT_ALLOWED', '此微信账号已有云存档，不能覆盖为本机档案');
       const body = jsonCopy(value, 'localImport');
       profile(body.profile);
+      if (body.checkpoint === null && body.profile.totalXp !== 0) throw new TypeError('Local import without a living checkpoint must have zero XP');
+      if (body.checkpoint !== null && (!body.checkpoint || body.checkpoint.version !== 2 || !Number.isSafeInteger(body.checkpoint.totalXp) || body.checkpoint.totalXp < 0 || body.checkpoint.totalXp > body.profile.totalXp || body.checkpoint.runStartXp !== 0)) throw new TypeError('Local import requires a version 2 living checkpoint');
       integer(body.bestScore, 'localImport.bestScore');
       if (!Object.prototype.hasOwnProperty.call(body, 'checkpoint')) throw new TypeError('Local import is missing checkpoint');
       const next = jsonCopy(this._box);
@@ -357,5 +378,5 @@
     }
   }
 
-  return { CloudSave, CloudSaveError, STORAGE_KEY };
+  return { CloudSave, CloudSaveError, STORAGE_KEY, LEGACY_STORAGE_KEY };
 });

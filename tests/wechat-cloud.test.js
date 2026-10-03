@@ -22,7 +22,7 @@ function loadBridge(apiBase = '', logs = []) {
   return module.exports.WechatCloud;
 }
 function account() {
-  return { user: { id: 'pilot-a' }, revision: 0, profile: { version: 1, totalXp: 0 }, bestScore: 0,
+  return { user: { id: 'pilot-a' }, revision: 0, profile: { version: 2, totalXp: 0 }, bestScore: 0,
     highestClearedStage: 0, checkpoint: null, inventory: { bomb: 2, support: 2 }, migrationAllowed: true };
 }
 function wxFixture() {
@@ -56,7 +56,7 @@ function configuredFixture(serverAccount = account()) {
   return { ...w, statuses, createBridge, setServer: value => { server = copy(value); } };
 }
 function nonemptyLocal() {
-  const previous = new Game({ profile: { version: 1, totalXp: 700 } });
+  const previous = new Game({ profile: { version: 2, totalXp: 700 } });
   previous.start();
   return { profile: previous.getProfile(), bestScore: 2300, checkpoint: previous.getCheckpoint() };
 }
@@ -71,7 +71,7 @@ function fixture() {
   let flushes = 0;
   let pending = null;
   bridge.account = account();
-  bridge.context = { version: 1, userId: 'pilot-a', runId: 'before-start', highestClearedStage: 0, stageResults: [], status: 'active' };
+  bridge.context = { version: 2, userId: 'pilot-a', runId: 'before-start', highestClearedStage: 0, stageResults: [], status: 'active' };
   bridge.client = {
     enqueue: snapshot => enqueued.push(copy(snapshot)),
     flush: async () => { flushes++; },
@@ -166,7 +166,7 @@ test('unconfigured cloud performs no login or request and announces local-only s
   const w = wxFixture();
   const statuses = [];
   const bridge = new (loadBridge())(w.wx, status => statuses.push(status));
-  assert.equal(await bridge.prepare({ profile: { version: 1, totalXp: 0 }, bestScore: 0, checkpoint: null }), null);
+  assert.equal(await bridge.prepare({ profile: { version: 2, totalXp: 0 }, bestScore: 0, checkpoint: null }), null);
   assert.equal(bridge.configured, false);
   assert.equal(bridge.client, null);
   assert.equal(w.calls.login.length, 0);
@@ -190,7 +190,7 @@ test('configured bridge passes wx login code and memory token through the real C
     } else throw new Error('Unexpected cloud endpoint ' + options.url);
   };
   const bridge = new (loadBridge('https://game.example.test'))(w.wx, () => {});
-  const result = await bridge.prepare({ profile: { version: 1, totalXp: 0 }, bestScore: 0, checkpoint: null });
+  const result = await bridge.prepare({ profile: { version: 2, totalXp: 0 }, bestScore: 0, checkpoint: null });
   assert.equal(result.user.id, 'pilot-a');
   assert.equal(w.calls.login.length, 1);
   assert.equal(w.calls.requests.length, 2);
@@ -202,7 +202,7 @@ test('local records owned by another META account are never imported into a new 
   emptyB.user.id = 'pilot-b';
   const f = configuredFixture(emptyB);
   const local = nonemptyLocal();
-  f.memory.set(META_KEY, { version: 1, userId: 'pilot-a', runId: 'preceding-a-run', highestClearedStage: 0, stageResults: [] });
+  f.memory.set(META_KEY, { version: 2, userId: 'pilot-a', runId: 'preceding-a-run', highestClearedStage: 0, stageResults: [] });
   f.memory.set('fighter-era.profile', copy(local.profile));
   f.memory.set('neon-wing.best-score', local.bestScore);
   f.memory.set('fighter-era.checkpoint', copy(local.checkpoint));
@@ -259,9 +259,9 @@ test('a completely unbound local record can migrate on the first account login',
 test('successful first prepare persists the account identity before returning the server record', async () => {
   const f = configuredFixture();
   const bridge = f.createBridge();
-  const result = await bridge.prepare({ profile: { version: 1, totalXp: 0 }, bestScore: 0, checkpoint: null });
+  const result = await bridge.prepare({ profile: { version: 2, totalXp: 0 }, bestScore: 0, checkpoint: null });
   const context = f.memory.get(META_KEY);
-  assert.equal(context.version, 1);
+  assert.equal(context.version, 2);
   assert.equal(context.userId, result.user.id);
   assert.match(context.runId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.equal(bridge.account.user.id, context.userId);
@@ -276,7 +276,7 @@ test('account identity persistence failure rejects prepare instead of claiming s
     originalSet(key, value);
   };
   const bridge = f.createBridge();
-  await assert.rejects(bridge.prepare({ profile: { version: 1, totalXp: 0 }, bestScore: 0, checkpoint: null }), /Simulated account identity storage failure/);
+  await assert.rejects(bridge.prepare({ profile: { version: 2, totalXp: 0 }, bestScore: 0, checkpoint: null }), /Simulated account identity storage failure/);
   assert.equal(f.memory.has(META_KEY), false);
   assert.equal(bridge.account, null, 'a failed ownership binding must not expose a prepared account');
   assert.equal(f.calls.requests.filter(request => request.url.endsWith('/import')).length, 0);
@@ -285,7 +285,7 @@ test('account identity persistence failure rejects prepare instead of claiming s
 test('a non-HTTPS cloud address fails before requesting WeChat login', async () => {
   const w = wxFixture();
   const bridge = new (loadBridge('http://game.example.test'))(w.wx, () => {});
-  await assert.rejects(bridge.prepare({ profile: { version: 1, totalXp: 0 }, bestScore: 0, checkpoint: null }), /HTTPS/);
+  await assert.rejects(bridge.prepare({ profile: { version: 2, totalXp: 0 }, bestScore: 0, checkpoint: null }), /HTTPS/);
   assert.equal(w.calls.login.length, 0);
   assert.equal(w.calls.requests.length, 0);
 });
@@ -324,21 +324,60 @@ test('start checkpoint emitted while engine still says gameover remains an activ
   assert.equal(f.enqueued.at(-1).checkpoint.phase, 'stage');
 });
 
-test('every continuation receives a fresh run ID instead of modifying the defeated attempt', async () => {
-  const f = fixture();
-  start(f);
+test('victory followed by an immediate restart keeps the terminal result and a coherent fresh attempt', async () => {
+  const f = await durableFixture(); start(f); await settle();
+  const oldId = f.bridge.context.runId;
+  for (let stage = 0; stage < f.game.stageCount; stage++) {
+    assert.equal(f.game.stage, stage);
+    f.game.spawnBoss();
+    f.game.destroyEnemy(f.game.enemies.find(enemy => enemy.type === 'boss'));
+    if (stage < f.game.stageCount - 1) {
+      f.game.chooseUpgrade('spread');
+      assert.equal(f.game.state, 'playing'); assert.equal(f.game.stage, stage + 1);
+    }
+  }
+  assert.equal(f.game.state, 'victory');
+  const terminal = copy(f.memory.get(STORAGE_KEY).queue.at(-1));
+  assert.equal(terminal.run.id, oldId); assert.equal(terminal.run.status, 'victory');
+  assert.equal(terminal.run.stage, 99); assert.equal(terminal.stageResults.length, 100);
+  assert.equal(terminal.highestClearedStage, 100);
+  assert.deepEqual(terminal.profile, { version: 2, totalXp: 0 });
+  assert.equal(terminal.checkpoint, null);
+  assert.ok(terminal.bestScore >= terminal.run.score);
+  const observationCount = f.observations.length;
+  f.bridge.beginRun(false); f.game.start();
+  const firstProgression = f.observations.slice(observationCount).find(item => item.name === 'progression');
+  assert.equal(firstProgression.state, 'victory', 'the engine emits the coherent new save before its state transition');
+  const queued = f.memory.get(STORAGE_KEY).queue;
+  assert.equal(queued.length, 2); assert.deepEqual(queued[0], terminal);
+  assert.notEqual(queued[1].run.id, oldId); assert.equal(queued[1].run.status, 'active');
+  assert.equal(queued[1].run.stage, 0); assert.equal(queued[1].run.score, 0);
+  assert.deepEqual(queued[1].profile, { version: 2, totalXp: 0 });
+  assert.equal(queued[1].checkpoint.stage, 0); assert.equal(queued[1].checkpoint.totalXp, 0);
+  assert.deepEqual(queued[1].stageResults, []); assert.equal(queued[1].highestClearedStage, 100);
+  assert.equal(f.bridge.running, true);
+  f.gate.resolve(); await settle();
+  assert.deepEqual(f.accepted.map(body => body.run.status), ['active', 'victory', 'active']);
+  assert.deepEqual(f.accepted.map(body => body.expectedRevision), [0, 1, 2]);
+  assert.equal(f.accepted[1].stageResults.at(-1).stage, 100);
+  assert.equal(f.memory.get(STORAGE_KEY).pending, null);
+  assert.deepEqual(f.memory.get(STORAGE_KEY).queue, []);
+});
+
+test('an alive continuation receives a fresh run ID while defeat has no continuation', async () => {
+  const f = fixture(); start(f); await settle();
+  const aliveId = f.bridge.context.runId;
+  f.game.pause(); f.bridge.endRun(); f.game.home();
+  assert.equal(Boolean(f.game.getCheckpoint()), true);
+  f.bridge.beginRun(true); assert.equal(f.game.continueRun(), true);
+  assert.notEqual(f.bridge.context.runId, aliveId);
+  advance(f.game, f.game.launchDuration);
   defeat(f);
-  const defeatedId = f.bridge.context.runId;
-  f.bridge.beginRun(true);
-  assert.equal(f.game.continueRun(), true);
-  const resumedId = f.bridge.context.runId;
-  assert.notEqual(resumedId, defeatedId);
-  await settle();
-  assert.equal(f.enqueued.at(-1).run.id, resumedId);
-  assert.equal(f.enqueued.at(-1).run.status, 'active');
-  assert.equal(f.enqueued.find(item => item.run.id === defeatedId && item.run.status === 'defeated').run.status, 'defeated');
-  f.bridge.beginRun(true);
-  assert.notEqual(f.bridge.context.runId, resumedId);
+  assert.equal(Boolean(f.game.getCheckpoint()), false);
+  const terminal = f.enqueued.at(-1);
+  assert.equal(terminal.run.status, 'defeated');
+  assert.equal(terminal.profile.totalXp, 0);
+  assert.equal(terminal.checkpoint, null);
 });
 
 test('home and background after defeat cannot change the terminal record', async () => {
@@ -424,7 +463,7 @@ test('ordinary experience is durable during a request and terminal coalescing re
   const terminal = copy(f.memory.get(STORAGE_KEY).queue[0]);
   assert.equal(terminal.run.status, 'defeated');
   assert.equal(terminal.run.id, oldId);
-  assert.equal(terminal.profile.totalXp, 10);
+  assert.equal(terminal.profile.totalXp, 0);
   f.bridge.beginRun(false);
   f.game.start();
   const newId = f.bridge.context.runId;
@@ -438,7 +477,7 @@ test('ordinary experience is durable during a request and terminal coalescing re
   assert.deepEqual(f.accepted.map(body => body.run.status), ['active', 'defeated', 'active']);
   assert.deepEqual(f.accepted.map(body => body.expectedRevision), [0, 1, 2]);
   assert.equal(f.accepted[1].run.score, 880);
-  assert.equal(f.accepted[1].profile.totalXp, 10);
+  assert.equal(f.accepted[1].profile.totalXp, 0);
   assert.equal(f.accepted[2].run.id, newId);
   assert.equal(f.memory.get(STORAGE_KEY).pending, null);
   assert.equal(f.memory.get(STORAGE_KEY).queue.length, 0);
@@ -504,4 +543,35 @@ test('stage clear evidence follows the actual BOSS event and appears in the next
   assert.deepEqual(saved.stageResults, [{ stage: 1, score: 2000, kills: 1 }]);
   assert.equal(saved.checkpoint.phase, 'upgrade');
   assert.equal(f.memory.get(META_KEY).highestClearedStage, 1);
+});
+
+
+test('fatal hit clears the durable cloud run before the ejection animation can be interrupted', async () => {
+  const f = await durableFixture(); start(f); await settle();
+  f.game.destroyEnemy({ type: 'scout', id: 900, x: 80, y: 130, hp: 1 });
+  const runId = f.bridge.context.runId;
+  assert.equal(f.game.getProfile().totalXp, 10);
+  f.game.player.hp = 1; f.game.player.invincible = 0;
+  f.game.enemyBullets.push({ x: f.game.player.x, y: f.game.player.y, vx: 0, vy: 0, r: 4, damage: 1 });
+  f.game.update(1 / 120);
+  assert.equal(f.game.state, 'ejecting');
+  const terminal = f.memory.get(STORAGE_KEY).queue.at(-1);
+  assert.equal(terminal.run.id, runId); assert.equal(terminal.run.status, 'defeated');
+  assert.deepEqual(terminal.profile, { version: 2, totalXp: 0 });
+  assert.equal(terminal.checkpoint, null); assert.equal(f.bridge.running, false);
+  assert.ok(terminal.bestScore >= terminal.run.score, 'the terminal record includes a new high score before the ejection animation');
+  assert.throws(() => f.bridge.beginRun(true), /广告或充值复活尚未配置/);
+  f.gate.resolve(); await settle();
+  assert.equal(f.accepted.at(-1).run.status, 'defeated');
+  assert.equal(f.accepted.at(-1).profile.totalXp, 0);
+});
+
+test('legacy cloud context cannot reattach old stage results to a version 2 run', async () => {
+  const f = configuredFixture();
+  f.memory.set(META_KEY, { version: 1, userId: 'pilot-a', runId: 'old-dead-run', highestClearedStage: 8, stageResults: [{ stage: 8, score: 900, kills: 20 }] });
+  const bridge = f.createBridge();
+  await bridge.prepare({ profile: { version: 2, totalXp: 0 }, bestScore: 900, checkpoint: null });
+  assert.equal(bridge.context.version, 2); assert.notEqual(bridge.context.runId, 'old-dead-run');
+  assert.deepEqual(bridge.context.stageResults, []);
+  assert.equal(f.calls.requests.some(request => request.url.endsWith('/import')), false);
 });

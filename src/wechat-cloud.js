@@ -32,7 +32,7 @@ class WechatCloud {
     if (!/^https:\/\/[^/?#]+(?:\/[^?#]*)?$/.test(config.apiBase)) throw new Error('云存档地址必须是已配置的 HTTPS 域名。');
     const storedValue = this.wx.getStorageSync(META_KEY);
     const stored = storedValue === '' ? null : storedValue;
-    if (stored !== null && (!stored || stored.version !== 1 || typeof stored.userId !== 'string' || !stored.userId || typeof stored.runId !== 'string' || !stored.runId || !Array.isArray(stored.stageResults) || !Number.isInteger(stored.highestClearedStage) || stored.highestClearedStage < 0 || stored.highestClearedStage > 100)) {
+    if (stored !== null && (!stored || ![1, 2].includes(stored.version) || typeof stored.userId !== 'string' || !stored.userId || typeof stored.runId !== 'string' || !stored.runId || !Array.isArray(stored.stageResults) || !Number.isInteger(stored.highestClearedStage) || stored.highestClearedStage < 0 || stored.highestClearedStage > 100)) {
       throw new Error('云存档上下文损坏，原记录保留，请检查本地存储。');
     }
     this.client = new CloudSave({
@@ -70,8 +70,8 @@ class WechatCloud {
     if (canImportLocal && account.migrationAllowed && (local.profile.totalXp > 0 || local.bestScore > 0 || local.checkpoint)) {
       account = await this.client.importLocal(local);
     }
-    this.context = stored && stored.userId === account.user.id && account.checkpoint ? stored : {
-      version: 1, userId: account.user.id, runId: uuid(), highestClearedStage: account.highestClearedStage, stageResults: []
+    this.context = stored && stored.version === 2 && stored.userId === account.user.id && account.checkpoint ? stored : {
+      version: 2, userId: account.user.id, runId: uuid(), highestClearedStage: account.highestClearedStage, stageResults: []
     };
     this.context.highestClearedStage = Math.max(this.context.highestClearedStage, account.highestClearedStage);
     // Bind the local mirror before the entry point writes the server's save.
@@ -89,6 +89,7 @@ class WechatCloud {
   }
   beginRun(continuing) {
     if (!this.account) return;
+    if (continuing && (!this.game || !this.game.getCheckpoint())) throw new Error('已结束的肉鸽对局不能续关；广告或充值复活尚未配置。');
     if (this.running) this.flushOnHide();
     // A continuation replays a stage boundary, so it is a new attempt too.
     // The previous attempt's terminal record must remain immutable.
@@ -115,8 +116,14 @@ class WechatCloud {
       this.persistContext();
     }
     if (['progression', 'checkpoint', 'gameover', 'victory'].includes(name)) this.dirty = true;
-    if (name === 'gameover' || name === 'victory') {
-      this.context.status = name === 'victory' ? 'victory' : 'defeated';
+    // A fresh run installs its checkpoint before changing the engine state.
+    // Only the event's transition identifies a terminal result; reading the
+    // preceding state here would misclassify a restart from victory.
+    const victory = name === 'victory' || name === 'state' && payload.state === 'victory' || name === 'checkpoint' && payload.reason === 'victory';
+    const defeated = name === 'gameover' || name === 'state' && ['ejecting', 'gameover'].includes(payload.state) || name === 'checkpoint' && payload.reason === 'defeated';
+    const terminal = victory || defeated;
+    if (terminal) {
+      this.context.status = victory ? 'victory' : 'defeated';
       this.persistContext();
       // Persist synchronously: a player may start the next run before a
       // deferred network task executes, and that must not replace results.
@@ -126,7 +133,7 @@ class WechatCloud {
       // every boundary now, before the asynchronous sender becomes available.
       this.client.enqueue(this.snapshot()); this.dirty = false;
     }
-    if (['checkpoint', 'gameover', 'victory'].includes(name)) this.flushSoon();
+    if (terminal || ['checkpoint', 'gameover', 'victory'].includes(name)) this.flushSoon();
   }
   tick(dt) { this.clock += dt; if (this.clock >= 10) { this.clock = 0; this.flushSoon(); } }
   flushSoon() {

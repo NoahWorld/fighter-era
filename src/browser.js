@@ -49,13 +49,13 @@
     const assets = await window.ShooterAssets.loadAssets(() => new Image());
     // A global error may have stopped initialization while images were loading.
     if (stopped) return;
-    const profileKey = 'fighter-era.profile';
-    const checkpointKey = 'fighter-era.checkpoint';
-    // Keep the original score key so existing pilots retain their best run.
+    // A single versioned record keeps growth and its alive checkpoint atomic.
+    // Permanent-growth saves from the previous rules are intentionally ignored.
+    const runKey = 'fighter-era.run.v2';
     const bestScoreKey = 'neon-wing.best-score';
     let bestScoreStorageAvailable = true;
-    let profileStorageAvailable = true;
-    let checkpointStorageAvailable = true;
+    let runStorageAvailable = true;
+    let legacyRulesDetected = false;
     let bestScore = 0;
     try {
       const stored = localStorage.getItem(bestScoreKey);
@@ -69,45 +69,41 @@
       report('score-storage', '最高分记录不可用，原记录不会被覆盖；本次最高分仅保留在当前页面。', error);
     }
     let savedBestScore = bestScore;
-    let profile = { version: 1, totalXp: 0 };
-    try {
-      const stored = localStorage.getItem(profileKey);
-      if (stored !== null) {
-        const value = JSON.parse(stored);
-        if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1 || !Number.isSafeInteger(value.totalXp) || value.totalXp < 0) {
-          throw new Error('战机档案必须为 {version:1,totalXp:非负安全整数}。');
-        }
-        profile = { version: 1, totalXp: value.totalXp };
-      }
-    } catch (error) {
-      profileStorageAvailable = false;
-      report('profile-storage', '成长档案不可用，原存档不会被覆盖；本次从初始等级临时游玩，经验无法保存。', error);
-    }
+    let profile = { version: 2, totalXp: 0 };
     let checkpoint = null;
     try {
-      const stored = localStorage.getItem(checkpointKey);
-      if (stored !== null) checkpoint = validateCheckpoint(JSON.parse(stored));
-    } catch (error) {
-      checkpointStorageAvailable = false;
-      report('checkpoint-storage', '续关记录不可用，原记录保留；本次无法保存续关。', error);
-    }
-
-    function saveCheckpoint() {
-      if (!checkpointStorageAvailable) return;
-      try { localStorage.setItem(checkpointKey, JSON.stringify(game.getCheckpoint())); }
-      catch (error) {
-        checkpointStorageAvailable = false;
-        report('checkpoint-storage', '续关记录保存失败，请勿关闭页面。', error);
+      const stored = localStorage.getItem(runKey);
+      if (stored !== null) {
+        const value = JSON.parse(stored);
+        if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 2 ||
+          Object.keys(value).sort().join(',') !== 'checkpoint,profile,version' ||
+          !value.profile || typeof value.profile !== 'object' || Array.isArray(value.profile) ||
+          Object.keys(value.profile).sort().join(',') !== 'totalXp,version' || value.profile.version !== 2 ||
+          !Number.isSafeInteger(value.profile.totalXp) || value.profile.totalXp < 0) {
+          throw new Error('本局存档必须为版本 2 的 {version,profile,checkpoint}，经验必须为非负安全整数。');
+        }
+        checkpoint = validateCheckpoint(value.checkpoint);
+        if (checkpoint === null && value.profile.totalXp !== 0) throw new Error('已结束的对局不能保留经验。');
+        if (checkpoint && checkpoint.totalXp > value.profile.totalXp) throw new Error('续关经验不能高于本局档案经验。');
+        profile = { version: 2, totalXp: value.profile.totalXp };
+      } else {
+        legacyRulesDetected = localStorage.getItem('fighter-era.profile') !== null ||
+          localStorage.getItem('fighter-era.checkpoint') !== null;
       }
+    } catch (error) {
+      runStorageAvailable = false;
+      profile = { version: 2, totalXp: 0 };
+      checkpoint = null;
+      report('run-storage', '本局存档不可用，原记录保留；本次临时游玩，无法保存未结束的远征。', error);
     }
 
-    function saveProfile() {
-      if (!profileStorageAvailable) return;
-      const snapshot = game.getProfile();
-      try { localStorage.setItem(profileKey, JSON.stringify(snapshot)); }
+    function saveRun() {
+      if (!runStorageAvailable) return;
+      const snapshot = { version: 2, profile: game.getProfile(), checkpoint: game.getCheckpoint() };
+      try { localStorage.setItem(runKey, JSON.stringify(snapshot)); }
       catch (error) {
-        profileStorageAvailable = false;
-        report('profile-storage', '成长档案保存失败；已获得的经验暂留在当前页面，关闭后可能丢失。', error);
+        runStorageAvailable = false;
+        report('run-storage', '本局存档保存失败，旧记录尚未更新；请勿关闭页面，详情见控制台。', error);
       }
     }
     function saveBestScore() {
@@ -190,9 +186,11 @@
     soundButton.addEventListener('click', () => { audio.enabled = !audio.enabled; updateSoundButton(); void audio.unlock(); });
     updateSoundButton();
     const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'upgrade', 'levelup', 'gameover', 'victory']);
-    game = new Game({ profile, bestScore, onEvent: (name, payload) => {
-      if (name === 'progression') { saveProfile(); syncPilotBriefing(); }
-      if (name === 'checkpoint') saveCheckpoint();
+    game = new Game({ profile, checkpoint, bestScore, onEvent: (name, payload) => {
+      const terminalState = name === 'state' && ['ejecting', 'gameover', 'victory'].includes(payload.state);
+      if (terminalState) { saveRun(); saveBestScore(); }
+      if (name === 'progression') { saveRun(); syncPilotBriefing(); }
+      if (name === 'checkpoint') saveRun();
       if (name === 'gameover' || name === 'victory') saveBestScore();
       try { audio.play(name); }
       catch (error) {
@@ -202,7 +200,11 @@
       }
       if (loggedEvents.has(name)) console.info(`[Fighter Era / ${name}]`, { state: game && game.state, stage: game && game.stage, score: game && game.score, payload });
     } });
-    game.setSavedCheckpoint(checkpoint);
+    if (legacyRulesDetected) {
+      document.getElementById('run-rules-note').textContent = '肉鸽规则已启用：旧版永久成长与续关不再使用，最高分仍保留。';
+      console.info('[Fighter Era / save-rules]', { version: 2, legacySavesIgnored: true });
+      saveRun();
+    }
     renderer = new window.ShooterRenderer.Renderer(ctx, assets);
     window.fighterEra = { game, renderer, diagnostics };
     window.neonWing = window.fighterEra;

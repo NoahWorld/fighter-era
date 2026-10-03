@@ -31,9 +31,11 @@ docker compose logs --tail 100 api
 
 使用 `config --quiet` 检查配置，不输出解析后的凭据。API 容器监听 4317，宿主机仅发布 `127.0.0.1:8088`；PostgreSQL 不发布宿主机端口。容器资源、健康检查和日志轮换由 `compose.yaml` 管理，数据库数据保存在独立卷中。
 
-启动先执行事务迁移并核验已应用迁移的摘要；迁移失败时服务停止，不能跳过或改写旧迁移制造就绪状态。升级数据库结构须新增迁移文件。更新前先备份，再同步审查后的项目文件并执行 `docker compose up -d --build`；保留 `deploy/.env` 与 `backups/`。
+启动先执行事务迁移并核验已应用迁移的摘要；迁移失败时服务停止，不能跳过或改写旧迁移制造就绪状态。升级数据库结构须新增迁移文件。肉鸽版本新增迁移 `002_roguelike_saves.sql`，清空旧永久经验和续关并停用旧存活对局编号，但保留账号、库存与历史成绩。更新前先备份，再同步审查后的项目文件及公开试玩目录并执行 `docker compose up -d --build`；保留 `deploy/.env` 与 `backups/`。
 
-当前没有公网 HTTPS 网关。`/health/ready` 报告数据库 `ready`、微信 `pending_configuration`，以及支付和广告 `not_enabled`，只代表数据库服务可用。真实登录还需服务器 AppSecret、HTTPS 地址、微信 request 合法域名和客户端公开 `apiBase`。网关接入不得未经任务授权修改已有应用的配置。
+浏览器试玩由独立 `web` 容器提供，目录为 `/opt/fighter-era/playtest`，只复制 `server.js`、`index.html`、`style.css`、`src/browser.js`、`src/engine.js`、`src/renderer.js`、`src/assets.js` 与六张图集，按原路径组织。静态服务仅允许公开资源；私有配置、后端源码和 Git 数据不可访问。默认公开端口 8080，可在私有配置中设置 `PLAYTEST_PORT`。云安全组需放行此 TCP 端口；已有 80 端口应用不变。启动前必须先创建并填充试玩目录，不能让空目录伪装健康。
+
+浏览器试玩当前使用 HTTP 和本机存档，可用于朋友测试；真实微信登录和跨设备账号存档仍需要 AppSecret 与 HTTPS 接入。当前没有公网 HTTPS 网关。`/health/ready` 报告数据库 `ready`、微信 `pending_configuration`，以及支付和广告 `not_enabled`，只代表数据库服务可用。真实登录还需服务器 AppSecret、HTTPS 地址、微信 request 合法域名和客户端公开 `apiBase`。网关接入不得未经任务授权修改已有应用的配置。
 
 ## 备份
 
@@ -78,7 +80,16 @@ docker compose exec -T db psql -U postgres -d fighter_era_restore_test -v ON_ERR
 
 ## 当前验证范围
 
-2026-10-03 已完成以下检查：
+肉鸽版本于 2026-10-03 完成以下检查：
+
+- `web`、`api`、`db` 容器健康；数据库已应用 `001_initial.sql` 与 `002_roguelike_saves.sql`。API 就绪 HTTP 200，微信仍为 `pending_configuration`，支付和广告仍为 `not_enabled`。
+- 客户端 143 项测试与后端 26 项测试全部通过，0 失败、0 跳过；后端包含 19 项真实 PostgreSQL 集成测试。独立测试库已清理，生产用户数为 0。
+- 服务器内部逐一读取首页、样式、四个 JS 文件和六张图集，12 项均 HTTP 200；私有环境、后端源码、Git 配置、源码版本记录和备份路径返回 404。
+- 更新前后分别完成备份，文件为 `fighter-era-20261003T121311Z.dump` 与 `fighter-era-20261003T121758Z.dump`。此次未重新执行备份恢复演练。
+- 既有应用四个关键文件 SHA-256 与更新前基线一致，原应用 HTTP 200；私有 `deploy/.env` 权限仍为 600。
+- 已在对应阿里云轻量应用服务器防火墙添加 TCP `8080`、来源 `0.0.0.0/0`，备注「战机时代浏览器试玩」；原有 22、80、443、ICMP 规则未改动。[公网试玩入口](http://47.116.38.160:8080/) 已实测打开并出击；12 项资源 HTTP 200 且内容与本地发布一致，私有路径 HTTP 404。浏览器试玩仍为本机存档。
+
+此前部署版本于 2026-10-03 完成以下检查（本次肉鸽版本另行记录）：
 
 - API 在服务器 `127.0.0.1:8088` 就绪检查返回 HTTP 200；AppSecret 未配置时登录返回 `503 WECHAT_NOT_CONFIGURED`，未授权读取账号返回 401。
 - 独立测试库通过 23 项后端测试：7 项单元测试、16 项 PostgreSQL 集成测试，0 跳过。

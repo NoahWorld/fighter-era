@@ -9,6 +9,10 @@ if (!/^\d+$/.test(portText) || Number(portText) < 1 || Number(portText) > 65535)
   throw new Error(`Invalid PORT: ${portText}. Expected an integer between 1 and 65535.`);
 }
 const port = Number(portText);
+const host = process.env.HOST || '127.0.0.1';
+if (!['127.0.0.1', '0.0.0.0'].includes(host)) {
+  throw new Error(`Invalid HOST: ${host}. Expected 127.0.0.1 or 0.0.0.0.`);
+}
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png' };
 const publicFiles = new Set(['index.html', 'style.css', 'src/browser.js', 'src/engine.js', 'src/renderer.js', 'src/assets.js', 'assets/player.png', 'assets/enemies.png', 'assets/warships.png', 'assets/projectiles.png', 'assets/expansion/enemy-variants.png', 'assets/expansion/fleet.png']);
 
@@ -34,5 +38,5 @@ const server = http.createServer(async (req, res) => {
     send(error.code === 'ENOENT' ? 404 : 500, error.code === 'ENOENT' ? 'Not found' : 'Static file read failed; see server logs.');
   }
 });
-server.on('error', error => { console.error(`[Neon Wing] Cannot listen on http://127.0.0.1:${port}`, error); throw error; });
-server.listen(port, '127.0.0.1', () => console.log(`Neon Wing ready: http://127.0.0.1:${port}`));
+server.on('error', error => { console.error(`[Fighter Era] Cannot listen on http://${host}:${port}`, error); throw error; });
+server.listen(port, host, () => console.log(`Fighter Era ready: http://${host}:${port}`));

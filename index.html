@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#060b16">
-  <meta name="description" content="战机时代 FIGHTER ERA：单指驾驶，击破敌舰，积累永久经验。从游隼到星曜，每次出击都让战机更强。">
+  <meta name="description" content="战机时代 FIGHTER ERA：单指驾驶，自动开火，100 关肉鸽远征。本局成长，失败重来。">
   <title>战机时代 · FIGHTER ERA</title>
   <link rel="stylesheet" href="./style.css">
   <script src="./src/engine.js" defer></script>
@@ -17,17 +17,18 @@
     <aside class="briefing" aria-label="游戏说明">
       <a class="brand" href="./" aria-label="战机时代首页"><span class="brand-mark" aria-hidden="true"><i></i></span><span>FIGHTER ERA<span class="brand-sub">战机时代 / 飞行指挥部</span></span></a>
       <div class="briefing-main">
-        <p class="eyebrow"><span></span> PILOT PROGRESSION / 持续进化</p>
-        <h1>战机时代<span>每次出击，更进一步。</span></h1>
-        <p class="intro">穿越 10 大星域，挑战 100 关来袭舰队。<br>积累永久经验，从游隼进化为星曜。</p>
-        <section class="pilot-card" aria-label="战机成长档案">
-          <div class="pilot-card-header"><span>当前战机 / ACTIVE FIGHTER</span><i>●</i></div>
-          <div class="pilot-identity"><div class="pilot-level"><span>LV.</span><strong id="pilot-level">01</strong></div><div class="pilot-model"><strong id="pilot-title">游隼</strong><span>火力与装甲随等级提升</span></div></div>
+        <p class="eyebrow"><span></span> ROGUELIKE EXPEDITION / 肉鸽远征</p>
+        <h1>战机时代<span>一条命，穿越百关星域。</span></h1>
+        <p class="intro">穿越 10 大星域，挑战 100 关来袭舰队。<br>在本局从游隼进化为星曜，失败后从头出击。</p>
+        <section class="pilot-card" aria-label="本局战机成长">
+          <div class="pilot-card-header"><span>本局战机 / CURRENT RUN</span><i>●</i></div>
+          <div class="pilot-identity"><div class="pilot-level"><span>LV.</span><strong id="pilot-level">01</strong></div><div class="pilot-model"><strong id="pilot-title">游隼</strong><span>本局火力与装甲随等级提升</span></div></div>
           <div class="pilot-xp-row"><span>当前等级经验</span><strong id="pilot-xp">0 / 0 XP</strong></div>
           <div class="pilot-progress-track" role="progressbar" aria-label="当前等级经验进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="pilot-progress"></span></div>
           <ol class="tier-track" aria-label="战机成长阶段"><li data-min-level="1" class="is-unlocked"><span>LV.01</span><strong>游隼</strong></li><li data-min-level="3"><span>LV.03</span><strong>破晓</strong></li><li data-min-level="6"><span>LV.06</span><strong>雷霆</strong></li><li data-min-level="10"><span>LV.10</span><strong>星曜</strong></li></ol>
-          <p class="pilot-note">前十级逐级换装 · 浏览器试玩存档保存在本机</p>
+          <p class="pilot-note">前十级逐级换装 · 未结束的远征保存在本机</p>
         </section>
+        <p id="run-rules-note" class="run-rules-note">失败清空本局经验和关卡；暂停可继续。试玩版暂未开放广告或付费复活。</p>
         <div class="controls-note"><span class="gesture-icon" aria-hidden="true">↔</span><div><strong>单指驾驶 · 自动开火</strong><p>右侧呼叫救援 / 轰炸弹 · 每关各一次</p><p class="desktop-control">方向键 / WASD 移动 · R 救援 · B 轰炸 · P 暂停</p></div></div>
         <div class="route-heading"><span>100 关远征 / 每星域 10 关</span><span>TEN SECTORS</span></div>
         <ol class="route-list" aria-label="100 关任务路线"><li><span>01–30</span><strong>星港边境 → 赤焰星云</strong><i>FRONTIER</i></li><li><span>31–70</span><strong>环星禁区 → 恒星熔炉</strong><i>DEEP SPACE</i></li><li><span>71–100</span><strong>极光星域 → 核心决战</strong><i>THE CORE</i></li></ol>

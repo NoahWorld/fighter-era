@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { readFile } from 'node:fs/promises';
 import { createStore } from '../src/store.js';
 import { loadConfig } from '../src/config.js';
 import { migrate } from '../src/migrate.js';
@@ -10,8 +11,8 @@ import { buildApp } from '../src/app.js';
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const skip = !databaseUrl && 'TEST_DATABASE_URL is not configured; real PostgreSQL integration must run separately';
 let pool, store, app;
-const seedCheckpoint = () => ({ version: 1, phase: 'stage', stage: 0, seed: 123, randomState: 123, entityId: 0, totalTime: 0, score: 0, kills: 0, runStartXp: 0, player: { hp: 5, maxHp: 5, weaponLevel: 1 }, fireInterval: 0.16, damageBonus: 0, freeCharges: { bomb: 1, support: 1 } });
-const saveBody = (revision, overrides = {}) => ({ mutationId: randomUUID(), expectedRevision: revision, profile: { version: 1, totalXp: 10 }, bestScore: 100, highestClearedStage: 0, checkpoint: seedCheckpoint(), run: { id: randomUUID(), stage: 0, score: 100, kills: 1, status: 'active' }, stageResults: [], ...overrides });
+const seedCheckpoint = () => ({ version: 2, totalXp: 0, phase: 'stage', stage: 0, seed: 123, randomState: 123, entityId: 0, totalTime: 0, score: 0, kills: 0, runStartXp: 0, player: { hp: 5, maxHp: 5, weaponLevel: 1 }, fireInterval: 0.16, damageBonus: 0, freeCharges: { bomb: 1, support: 1 } });
+const saveBody = (revision, overrides = {}) => ({ mutationId: randomUUID(), expectedRevision: revision, profile: { version: 2, totalXp: 10 }, bestScore: 100, highestClearedStage: 0, checkpoint: seedCheckpoint(), run: { id: randomUUID(), stage: 0, score: 100, kills: 1, status: 'active' }, stageResults: [], ...overrides });
 const account = async () => store.createSession('test-openid-' + randomUUID());
 
 test.before(async () => {
@@ -51,7 +52,7 @@ test('WeChat identity is stable, session is opaque and database stores only toke
 
 test('first local import is once only and retry after lost response is idempotent', { skip }, async () => {
   const { account: user } = await account();
-  const body = { mutationId: randomUUID(), profile: { version: 1, totalXp: 150 }, bestScore: 900, checkpoint: seedCheckpoint() };
+  const body = { mutationId: randomUUID(), profile: { version: 2, totalXp: 150 }, bestScore: 900, checkpoint: seedCheckpoint() };
   const imported = await store.importSave(user.user.id, body);
   assert.equal(imported.account.revision, 1);
   assert.equal(imported.account.profile.totalXp, 150);
@@ -99,41 +100,54 @@ test('invalid checkpoint or missing stage evidence rolls back every update', { s
 
 test('server rejects skipped stage clears and arbitrary new-run stage selection', { skip }, async () => {
   const { account: user } = await account();
-  const skipped = saveBody(0, { checkpoint: null, highestClearedStage: 100, run: { id: randomUUID(), stage: 99, score: 100, kills: 1, status: 'victory' }, stageResults: [{ stage: 100, score: 100, kills: 1 }] });
+  const skipped = saveBody(0, { profile: { version: 2, totalXp: 0 }, checkpoint: null, highestClearedStage: 100, run: { id: randomUUID(), stage: 99, score: 100, kills: 1, status: 'victory' }, stageResults: [{ stage: 100, score: 100, kills: 1 }] });
   await assert.rejects(store.save(user.user.id, skipped), error => error.code === 'INVALID_RUN_START');
   const body = saveBody(0);
   await store.save(user.user.id, body);
-  const next = { ...body, mutationId: randomUUID(), expectedRevision: 1, checkpoint: null, run: { ...body.run, stage: 2 }, highestClearedStage: 3, stageResults: [{ stage: 1, score: 100, kills: 1 }, { stage: 3, score: 100, kills: 1 }] };
+  const next = { ...body, mutationId: randomUUID(), expectedRevision: 1, checkpoint: { ...body.checkpoint, stage: 2 }, run: { ...body.run, stage: 2 }, highestClearedStage: 3, stageResults: [{ stage: 1, score: 100, kills: 1 }, { stage: 3, score: 100, kills: 1 }] };
   await assert.rejects(store.save(user.user.id, next), error => error.code === 'INVALID_STAGE_PROGRESS');
 });
 
-test('terminal run cannot return to active state and progression never decreases', { skip }, async () => {
+test('terminal run cannot return to active and defeat clears XP/checkpoint atomically', { skip }, async () => {
   const { account: user } = await account();
-  const body = saveBody(0, { checkpoint: null });
-  body.run.status = 'defeated';
-  await store.save(user.user.id, body);
-  await assert.rejects(store.save(user.user.id, { ...body, mutationId: randomUUID(), expectedRevision: 1, run: { ...body.run, status: 'active' } }), error => error.code === 'INVALID_RUN_TRANSITION');
-  await assert.rejects(store.save(user.user.id, saveBody(1, { profile: { version: 1, totalXp: 1 } })), error => error.code === 'PROGRESSION_DECREASE');
+  const active = saveBody(0);
+  await store.save(user.user.id, active);
+  const ended = { ...active, mutationId: randomUUID(), expectedRevision: 1, profile: { version: 2, totalXp: 0 }, checkpoint: null, run: { ...active.run, status: 'defeated' } };
+  const result = await store.save(user.user.id, ended);
+  assert.equal(result.account.profile.totalXp, 0);
+  assert.equal(result.account.checkpoint, null);
+  assert.equal(result.account.bestScore, 100);
+  await assert.rejects(store.save(user.user.id, { ...ended, mutationId: randomUUID(), expectedRevision: 2, run: { ...ended.run, status: 'active' } }), error => error.code === 'INVALID_RUN_TRANSITION');
+  const fresh = saveBody(2, { profile: { version: 2, totalXp: 0 }, run: { id: randomUUID(), stage: 0, score: 0, kills: 0, status: 'active' } });
+  await store.save(user.user.id, fresh);
+  assert.equal((await store.getAccount(user.user.id)).profile.totalXp, 0);
 });
 
-test('defeat preserves a valid stage-start checkpoint and continuation creates a new run', { skip }, async () => {
+test('defeated run cannot preserve XP or a checkpoint and cannot resume a later stage', { skip }, async () => {
   const { account: user } = await account();
-  const checkpoint = { ...seedCheckpoint(), freeCharges: { bomb: 0, support: 1 } };
-  const defeated = saveBody(0, { checkpoint });
-  defeated.run.status = 'defeated';
-  const result = await store.save(user.user.id, defeated);
-  assert.deepEqual(result.account.checkpoint, checkpoint);
-  const continued = saveBody(1, { profile: { version: 1, totalXp: 10 }, checkpoint, run: { id: randomUUID(), stage: 0, score: 0, kills: 0, status: 'active' } });
-  const resumed = await store.save(user.user.id, continued);
-  assert.equal(resumed.account.revision, 2);
-  assert.equal((await pool.query('SELECT count(*)::int AS count FROM game_runs WHERE user_id=$1', [user.user.id])).rows[0].count, 2);
+  const active = saveBody(0);
+  await assert.rejects(store.save(user.user.id, { ...active, run: { ...active.run, status: 'defeated' } }), error => error.code === 'TERMINAL_SAVE_NOT_RESET');
+  await assert.rejects(store.save(user.user.id, { ...active, checkpoint: null, run: { ...active.run, status: 'defeated' } }), error => error.code === 'TERMINAL_SAVE_NOT_RESET');
+  const ended = { ...active, profile: { version: 2, totalXp: 0 }, checkpoint: null, run: { ...active.run, status: 'defeated' } };
+  await store.save(user.user.id, ended);
+  await assert.rejects(store.save(user.user.id, saveBody(1, { checkpoint: { ...seedCheckpoint(), stage: 1 }, run: { id: randomUUID(), stage: 1, score: 0, kills: 0, status: 'active' } })), error => error.code === 'INVALID_RUN_START');
+  assert.equal((await store.getAccount(user.user.id)).revision, 1);
+});
+
+test('fresh runs may reset living XP but same run decrease requires the unchanged boundary', { skip }, async () => {
+  const { account: user } = await account(); const active = saveBody(0);
+  await store.save(user.user.id, active);
+  await assert.rejects(store.save(user.user.id, { ...active, mutationId: randomUUID(), expectedRevision: 1, profile: { version: 2, totalXp: 1 } }), error => error.code === 'PROGRESSION_DECREASE');
+  const fresh = saveBody(1, { profile: { version: 2, totalXp: 0 }, run: { id: randomUUID(), stage: 0, score: 0, kills: 0, status: 'active' } });
+  await store.save(user.user.id, fresh);
+  assert.equal((await store.getAccount(user.user.id)).profile.totalXp, 0);
 });
 
 test('restored upgrade panel allows a new attempt then advances without rewarding the old boss twice', { skip }, async () => {
   const { account: user } = await account();
   const checkpoint = { ...seedCheckpoint(), phase: 'upgrade', stage: 1, score: 100, kills: 1 };
-  await store.importSave(user.user.id, { mutationId: randomUUID(), profile: { version: 1, totalXp: 100 }, bestScore: 100, checkpoint });
-  const body = saveBody(1, { profile: { version: 1, totalXp: 100 }, highestClearedStage: 2, checkpoint, run: { id: randomUUID(), stage: 1, score: 100, kills: 1, status: 'active' } });
+  await store.importSave(user.user.id, { mutationId: randomUUID(), profile: { version: 2, totalXp: 100 }, bestScore: 100, checkpoint });
+  const body = saveBody(1, { profile: { version: 2, totalXp: 100 }, highestClearedStage: 2, checkpoint, run: { id: randomUUID(), stage: 1, score: 100, kills: 1, status: 'active' } });
   await store.save(user.user.id, body);
   await store.save(user.user.id, { ...body, mutationId: randomUUID(), expectedRevision: 2, checkpoint: { ...checkpoint, phase: 'stage', stage: 2 }, run: { ...body.run, stage: 2 } });
   assert.equal((await store.getAccount(user.user.id)).checkpoint.stage, 2);
@@ -143,8 +157,8 @@ test('restored upgrade panel allows a new attempt then advances without rewardin
 test('a fresh run may clear stage one again after an earlier upgrade checkpoint', { skip }, async () => {
   const { account: user } = await account();
   const checkpoint = { ...seedCheckpoint(), phase: 'upgrade', score: 100, kills: 1 };
-  await store.importSave(user.user.id, { mutationId: randomUUID(), profile: { version: 1, totalXp: 100 }, bestScore: 100, checkpoint });
-  await store.save(user.user.id, saveBody(1, { profile: { version: 1, totalXp: 110 }, highestClearedStage: 1, checkpoint, stageResults: [{ stage: 1, score: 100, kills: 1 }] }));
+  await store.importSave(user.user.id, { mutationId: randomUUID(), profile: { version: 2, totalXp: 100 }, bestScore: 100, checkpoint });
+  await store.save(user.user.id, saveBody(1, { profile: { version: 2, totalXp: 110 }, highestClearedStage: 1, checkpoint, stageResults: [{ stage: 1, score: 100, kills: 1 }] }));
   assert.equal((await pool.query('SELECT clear_count FROM stage_records WHERE user_id=$1 AND stage=1', [user.user.id])).rows[0].clear_count, 1);
 });
 
@@ -183,11 +197,41 @@ test('inventory retry consumes exactly once and mutation reuse is explicit', { s
 test('protected HTTP account reads never accept another user identity', { skip }, async () => {
   const first = await account();
   const second = await account();
-  await store.importSave(second.account.user.id, { mutationId: randomUUID(), profile: { version: 1, totalXp: 200 }, bestScore: 300, checkpoint: null });
+  await store.importSave(second.account.user.id, { mutationId: randomUUID(), profile: { version: 2, totalXp: 0 }, bestScore: 300, checkpoint: null });
   const response = await app.inject({ method: 'GET', url: '/v1/me?userId=' + second.account.user.id, headers: { authorization: 'Bearer ' + first.token } });
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().user.id, first.account.user.id);
   assert.equal(response.json().profile.totalXp, 0);
-  const forged = await app.inject({ method: 'POST', url: '/v1/me/import', headers: { authorization: 'Bearer ' + first.token }, payload: { mutationId: randomUUID(), userId: second.account.user.id, profile: { version: 1, totalXp: 200 }, bestScore: 0, checkpoint: null } });
+  const forged = await app.inject({ method: 'POST', url: '/v1/me/import', headers: { authorization: 'Bearer ' + first.token }, payload: { mutationId: randomUUID(), userId: second.account.user.id, profile: { version: 2, totalXp: 200 }, bestScore: 0, checkpoint: null } });
   assert.equal(forged.statusCode, 400);
+});
+
+
+test('legacy import and XP without a living checkpoint are rejected', { skip }, async () => {
+  const { account: user } = await account();
+  await assert.rejects(store.importSave(user.user.id, { mutationId: randomUUID(), profile: { version: 1, totalXp: 30 }, bestScore: 50, checkpoint: null }), error => error.code === 'LEGACY_SAVE_REJECTED');
+  await assert.rejects(store.importSave(user.user.id, { mutationId: randomUUID(), profile: { version: 2, totalXp: 30 }, bestScore: 50, checkpoint: null }), error => error.code === 'INVALID_RUN_XP');
+  const body = saveBody(0, { profile: { version: 1, totalXp: 10 } });
+  const response = await app.inject({ method: 'PUT', url: '/v1/me/save', headers: { authorization: 'Bearer ' + (await store.createSession('legacy-http-' + randomUUID())).token }, payload: body });
+  assert.equal(response.statusCode, 400);
+});
+
+
+test('forward roguelike migration resets legacy growth but retains identity, inventory and records', { skip }, async () => {
+  const { account: user } = await account();
+  const checkpoint = { ...seedCheckpoint(), phase: 'upgrade', score: 100, kills: 1 };
+  const legacyRun = saveBody(0, { checkpoint, highestClearedStage: 1, stageResults: [{ stage: 1, score: 100, kills: 1 }] });
+  await store.save(user.user.id, legacyRun);
+  await store.grantInventory({ userId: user.user.id, item: 'support', quantity: 2, source: 'operator', sourceId: randomUUID() });
+  await pool.query('UPDATE player_saves SET total_xp=900,checkpoint=$2 WHERE user_id=$1', [user.user.id, { ...checkpoint, version: 1 }]);
+  await pool.query(await readFile(new URL('../migrations/002_roguelike_saves.sql', import.meta.url), 'utf8'));
+  const migrated = await store.getAccount(user.user.id);
+  assert.deepEqual(migrated.profile, { version: 2, totalXp: 0 });
+  assert.equal(migrated.checkpoint, null);
+  assert.equal(migrated.bestScore, 100); assert.equal(migrated.highestClearedStage, 1);
+  assert.equal(migrated.inventory.support, 2); assert.equal(migrated.revision, 2);
+  assert.equal((await pool.query('SELECT status FROM game_runs WHERE user_id=$1 AND id=$2', [user.user.id, legacyRun.run.id])).rows[0].status, 'defeated');
+  await assert.rejects(store.save(user.user.id, { ...legacyRun, mutationId: randomUUID(), expectedRevision: 2 }), error => error.code === 'INVALID_RUN_TRANSITION');
+  assert.equal((await pool.query('SELECT clear_count FROM stage_records WHERE user_id=$1 AND stage=1', [user.user.id])).rows[0].clear_count, 1);
+  assert.equal((await pool.query('SELECT count(*)::int AS count FROM users WHERE id=$1', [user.user.id])).rows[0].count, 1);
 });

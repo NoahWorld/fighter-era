@@ -26,8 +26,7 @@ test('a recovered interrupted stage starts its waves again using saved stage-bou
   game.kills += 8;
   game.player.weaponLevel = 3;
   game.enemyBullets.push({ x: 123, y: 456, vx: 0, vy: 100, r: 3 });
-  const recovered = new Game({ profile: game.getProfile() });
-  recovered.setSavedCheckpoint(game.getCheckpoint());
+  const recovered = new Game({ profile: game.getProfile(), checkpoint: game.getCheckpoint() });
   assert.equal(recovered.continueRun(), true);
   assert.equal(recovered.state, 'launching');
   assert.equal(recovered.stage, 1);
@@ -41,33 +40,35 @@ test('a recovered interrupted stage starts its waves again using saved stage-bou
   assert.equal(recovered.player.weaponLevel, boundary.player.weaponLevel);
   assert.deepEqual(recovered.enemyBullets, []);
   assert.deepEqual(recovered.enemies, []);
-  assert.equal(recovered.progression.totalXp, game.progression.totalXp);
+  assert.equal(recovered.progression.totalXp, boundary.totalXp, 'unfinished stage experience rolls back with the stage');
   advance(recovered, recovered.launchDuration);
   assert.equal(recovered.state, 'playing');
   assert.equal(recovered.nextWave, 1.2);
 });
 
-test('spent free abilities stay spent after defeat or reload while a new stage replenishes them', () => {
+test('spent free abilities stay spent after surviving reload while death removes continuation', () => {
   const events = [];
   const game = playing({ onEvent: (name, payload) => { if (name === 'checkpoint') events.push(payload.checkpoint); } });
   assert.equal(game.callSupport(), true);
   assert.equal(game.useBomb(), true);
   assert.deepEqual(game.getCheckpoint().freeCharges, { bomb: 0, support: 0 });
   assert.equal(events.length, 3, 'new run and each free consumption publish durable checkpoint updates');
-  game.player.hp = 1;
-  game.player.invincible = 0;
-  game.hurt();
-  advance(game, game.ejectionDuration);
-  assert.equal(game.state, 'gameover');
-  assert.ok(game.getCheckpoint().player.hp > 0, 'defeat cannot overwrite the usable stage-start health');
-  const reloaded = new Game({ profile: game.getProfile() });
-  reloaded.restoreCheckpoint(game.getCheckpoint());
+  const reloaded = new Game({ profile: game.getProfile(), checkpoint: game.getCheckpoint() });
+  reloaded.continueRun();
   advance(reloaded, reloaded.launchDuration);
   assert.equal(reloaded.callSupport(), false);
   assert.equal(reloaded.useBomb(), false);
   defeatBoss(reloaded);
   reloaded.chooseUpgrade('spread');
   assert.deepEqual(reloaded.getCheckpoint().freeCharges, { bomb: 1, support: 1 });
+  reloaded.player.hp = 1;
+  reloaded.player.invincible = 0;
+  reloaded.hurt();
+  assert.equal(reloaded.state, 'ejecting');
+  assert.equal(reloaded.getCheckpoint(), null, 'death clears continuation before the ejection animation');
+  assert.deepEqual(reloaded.getProfile(), { version: 2, totalXp: 0 });
+  advance(reloaded, reloaded.ejectionDuration);
+  assert.equal(reloaded.continueRun(), false);
 });
 
 test('a boss-complete checkpoint resumes upgrade selection without awarding the boss again', () => {
@@ -76,13 +77,14 @@ test('a boss-complete checkpoint resumes upgrade selection without awarding the 
   const checkpoint = game.getCheckpoint();
   assert.equal(checkpoint.phase, 'upgrade');
   const events = [];
-  const recovered = new Game({ profile: game.getProfile(), onEvent: (name, payload) => events.push({ name, payload }) });
-  recovered.restoreCheckpoint(checkpoint);
+  const recovered = new Game({ profile: game.getProfile(), checkpoint, onEvent: (name, payload) => events.push({ name, payload }) });
+  recovered.continueRun();
   assert.equal(recovered.state, 'upgrade');
   assert.equal(recovered.score, game.score);
   assert.equal(recovered.kills, game.kills);
   assert.deepEqual(recovered.getProfile(), game.getProfile());
-  assert.equal(events.some(event => event.name === 'boss' || event.name === 'progression'), false);
+  assert.equal(events.some(event => event.name === 'boss'), false);
+  assert.deepEqual(events.filter(event => event.name === 'progression').map(event => event.payload), [game.getProfile()], 'resume publishes canonical boundary growth without awarding anything');
   assert.deepEqual(recovered.enemies, []);
   recovered.chooseUpgrade('rapid');
   assert.equal(recovered.stage, 1);
@@ -116,9 +118,10 @@ test('checkpoint validation rejects malformed or impossible saves without overwr
   const game = playing();
   const valid = game.getCheckpoint();
   game.home();
-  const invalids = [undefined, {}, { ...valid, version: 2 }, { ...valid, stage: 100 }, { ...valid, seed: -1 },
+  const invalids = [undefined, {}, { ...valid, version: 1 }, { ...valid, stage: 100 }, { ...valid, seed: -1 },
     { ...valid, randomState: 0x100000000 }, { ...valid, phase: 'paused' }, { ...valid, phase: 'upgrade', stage: 99 },
     { ...valid, score: NaN }, { ...valid, score: 0.1 }, { ...valid, kills: -1 }, { ...valid, entityId: Number.MAX_SAFE_INTEGER + 1 },
+    { ...valid, totalXp: -1 }, { ...valid, totalXp: 0.1 }, { ...valid, totalXp: Number.MAX_SAFE_INTEGER + 1 },
     { ...valid, totalTime: Infinity }, { ...valid, totalTime: -1 }, { ...valid, fireInterval: 0.01 },
     { ...valid, damageBonus: 50 }, { ...valid, player: { ...valid.player, hp: 0 } },
     { ...valid, player: { ...valid.player, hp: valid.player.maxHp + 1 } },
@@ -129,8 +132,7 @@ test('checkpoint validation rejects malformed or impossible saves without overwr
     assert.deepEqual(game.getCheckpoint(), valid);
   }
   const baselineAhead = { ...valid, runStartXp: 9999 };
-  game.setSavedCheckpoint(baselineAhead);
-  assert.throws(() => game.continueRun(), /experience baseline/);
+  assert.throws(() => game.setSavedCheckpoint(baselineAhead), /experience baseline/);
   assert.equal(game.state, 'menu');
   game.setSavedCheckpoint(null);
   assert.equal(game.continueRun(), false);
@@ -187,6 +189,52 @@ test('free skill use leaves account inventory unchanged and explicit inventory u
   assert.deepEqual(game.inventory, { bomb: 2, support: 1 });
 });
 
+test('fatal damage atomically removes all run growth before any persistence event and cannot be revived locally', () => {
+  const persisted = [];
+  let game;
+  game = playing({ onEvent: (name, payload) => {
+    if (['progression', 'checkpoint', 'state'].includes(name)) persisted.push({ name, payload, profile: game ? game.getProfile() : null, checkpoint: game ? game.getCheckpoint() : null, bestScore: game ? game.bestScore : null });
+  } });
+  game.addExperience(700);
+  defeatBoss(game);
+  game.chooseUpgrade('repair');
+  const oldCheckpoint = game.getCheckpoint();
+  game.player.weaponLevel = 3;
+  game.damageBonus = 4;
+  game.fireInterval = 0.07;
+  game.player.hp = 1;
+  game.player.invincible = 0;
+  persisted.length = 0;
+  game.hurt();
+  assert.equal(game.state, 'ejecting');
+  assert.equal(game.getCheckpoint(), null);
+  assert.deepEqual(game.getProfile(), { version: 2, totalXp: 0 });
+  assert.equal(game.progression.level, 1);
+  assert.equal(game.resultProgression.totalXp, 820);
+  assert.equal(game.player.maxHp, 5);
+  assert.equal(game.player.shipLevel, 1);
+  assert.equal(game.player.weaponLevel, 1);
+  assert.equal(game.damageBonus, 0);
+  assert.equal(game.fireInterval, 0.16);
+  assert.equal(game.bestScore, game.score, 'the fatal hit settles the highest score before the animation');
+  assert.equal(persisted.length, 3);
+  for (const event of persisted) {
+    assert.deepEqual(event.profile, { version: 2, totalXp: 0 });
+    assert.equal(event.checkpoint, null, 'no observer sees zero XP paired with a resumable checkpoint');
+    assert.equal(event.bestScore, game.score, 'every terminal observer sees the completed score');
+  }
+  assert.deepEqual(persisted.find(event => event.name === 'checkpoint').payload, { checkpoint: null, reason: 'defeated' });
+  advance(game, game.ejectionDuration);
+  assert.equal(game.continueRun(), false);
+  assert.throws(() => game.setSavedCheckpoint(oldCheckpoint), /verified revival/);
+  game.home();
+  assert.equal(game.continueRun(), false);
+  game.start();
+  assert.equal(game.stage, 0);
+  assert.equal(game.player.hp, 5);
+  assert.equal(game.getCheckpoint().totalXp, 0);
+});
+
 test('continuation buttons stay within the screen, do not overlap, and inventory affects skill availability', () => {
   const game = playing();
   game.home();
@@ -194,7 +242,7 @@ test('continuation buttons stay within the screen, do not overlap, and inventory
   for (const state of ['menu', 'gameover']) {
     game.state = state;
     const buttons = renderer.getButtons(game);
-    assert.ok(buttons.some(button => button.id === 'continue'));
+    assert.equal(buttons.some(button => button.id === 'continue'), state === 'menu', 'defeat never offers an unverified continuation');
     for (let i = 0; i < buttons.length; i++) {
       assert.ok(buttons[i].y + buttons[i].h <= 720);
       for (let j = 0; j < i; j++) assert.ok(buttons[i].y >= buttons[j].y + buttons[j].h);

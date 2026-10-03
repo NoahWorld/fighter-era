@@ -17,12 +17,11 @@ let previousTime = null;
 let touchSession = null;
 let viewport;
 let loadingMessage = '正在加载战机与弹药素材…';
-const profileKey = 'fighter-era.profile';
+// Growth and its alive checkpoint are stored in one atomic, versioned record.
+const runKey = 'fighter-era.run.v2';
 const bestScoreKey = 'neon-wing.best-score';
-const checkpointKey = 'fighter-era.checkpoint';
 let bestScoreStorageAvailable = true;
-let profileStorageAvailable = true;
-let checkpointStorageAvailable = true;
+let runStorageAvailable = true;
 let savedBestScore = 0;
 const diagnostics = [];
 let cloudStatus;
@@ -50,11 +49,11 @@ function fatal(error) {
   wx.showModal({ title: '游戏已停止', content: `${error.message || String(error)}\n请查看开发者工具日志。`, showCancel: false, fail: failure => console.error('[Fighter Era] Error modal failed', failure) });
 }
 
-function saveProfile() {
-  if (!profileStorageAvailable) return;
-  const snapshot = game.getProfile();
-  try { wx.setStorageSync(profileKey, snapshot); }
-  catch (error) { profileStorageAvailable = false; report('经验保存失败，本次成长仅暂存', error); }
+function saveRun() {
+  if (!runStorageAvailable) return;
+  const snapshot = { version: 2, profile: game.getProfile(), checkpoint: game.getCheckpoint() };
+  try { wx.setStorageSync(runKey, snapshot); }
+  catch (error) { runStorageAvailable = false; report('本局存档保存失败，旧记录尚未更新', error); }
 }
 
 function saveBestScore() {
@@ -63,12 +62,6 @@ function saveBestScore() {
   if (!bestScoreStorageAvailable) return;
   try { wx.setStorageSync(bestScoreKey, savedBestScore); }
   catch (error) { bestScoreStorageAvailable = false; report('最高分保存失败，本次成绩仅暂存', error); }
-}
-
-function saveCheckpoint() {
-  if (!checkpointStorageAvailable) return;
-  try { wx.setStorageSync(checkpointKey, game.getCheckpoint()); }
-  catch (error) { checkpointStorageAvailable = false; report('续关记录保存失败，请勿关闭游戏', error); }
 }
 
 function resize() {
@@ -195,14 +188,14 @@ function frame(timestamp) {
       ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(label, WIDTH / 2, HEIGHT - 9, WIDTH - 12);
     }
-    if (!profileStorageAvailable || !bestScoreStorageAvailable) {
+    if (!runStorageAvailable || !bestScoreStorageAvailable) {
       ctx.fillStyle = '#201d22ed';
       ctx.fillRect(0, HEIGHT - 25, WIDTH, 25);
       ctx.fillStyle = '#e2bd87';
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(!profileStorageAvailable ? '成长存档不可用 · 本次经验仅临时保留' : '最高分存储不可用 · 本次成绩仅临时保留', WIDTH / 2, HEIGHT - 12);
+      ctx.fillText(!runStorageAvailable ? '本局存档不可用 · 旧记录尚未更新' : '最高分存储不可用 · 本次成绩仅临时保留', WIDTH / 2, HEIGHT - 12);
     }
     ctx.restore();
     frameId = requestAnimationFrame(frame);
@@ -223,21 +216,35 @@ async function initialize() {
       }
     } catch (error) { bestScoreStorageAvailable = false; report('最高分读取失败，原记录不会覆盖', error); }
     savedBestScore = bestScore;
-    let profile = { version: 1, totalXp: 0 };
-    try {
-      const value = wx.getStorageSync(profileKey);
-      if (value !== '') {
-        if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1 || !Number.isSafeInteger(value.totalXp) || value.totalXp < 0) {
-          throw new Error('战机档案必须为 {version:1,totalXp:非负安全整数}。');
-        }
-        profile = { version: 1, totalXp: value.totalXp };
-      }
-    } catch (error) { profileStorageAvailable = false; report('档案不可用，原档保留，本次成长不保存', error); }
+    let profile = { version: 2, totalXp: 0 };
     let checkpoint = null;
+    let legacyRulesDetected = false;
     try {
-      const stored = wx.getStorageSync(checkpointKey);
-      if (stored !== '') checkpoint = validateCheckpoint(stored);
-    } catch (error) { checkpointStorageAvailable = false; report('续关记录不可用，原记录不会覆盖', error); }
+      const value = wx.getStorageSync(runKey);
+      if (value !== '') {
+        if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 2 ||
+          Object.keys(value).sort().join(',') !== 'checkpoint,profile,version' ||
+          !value.profile || typeof value.profile !== 'object' || Array.isArray(value.profile) ||
+          Object.keys(value.profile).sort().join(',') !== 'totalXp,version' || value.profile.version !== 2 ||
+          !Number.isSafeInteger(value.profile.totalXp) || value.profile.totalXp < 0) {
+          throw new Error('本局存档必须为版本 2 的 {version,profile,checkpoint}，经验必须为非负安全整数。');
+        }
+        checkpoint = validateCheckpoint(value.checkpoint);
+        if (checkpoint === null && value.profile.totalXp !== 0) throw new Error('已结束的对局不能保留经验。');
+        if (checkpoint && checkpoint.totalXp > value.profile.totalXp) throw new Error('续关经验不能高于本局档案经验。');
+        profile = { version: 2, totalXp: value.profile.totalXp };
+      } else {
+        // Preserve historical values for diagnosis, never migrate permanent XP
+        // or potentially defeated checkpoints into the roguelike rules.
+        legacyRulesDetected = wx.getStorageSync('fighter-era.profile') !== '' ||
+          wx.getStorageSync('fighter-era.checkpoint') !== '';
+      }
+    } catch (error) {
+      runStorageAvailable = false;
+      profile = { version: 2, totalXp: 0 };
+      checkpoint = null;
+      report('本局存档不可用，原记录保留，本次不保存', error);
+    }
     if (cloud.configured) {
       try {
         resize();
@@ -251,17 +258,24 @@ async function initialize() {
       }
     }
     const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'upgrade', 'levelup', 'gameover', 'victory']);
-    game = new Game({ profile, bestScore, onEvent: (name, payload) => {
-      if (name === 'progression') saveProfile();
-      if (name === 'checkpoint') saveCheckpoint();
-      if (name === 'gameover' || name === 'victory') saveBestScore();
+    game = new Game({ profile, checkpoint, bestScore, onEvent: (name, payload) => {
+      // Terminal state is emitted before progression/checkpoint. Persist the
+      // cleared run before a cloud outbox failure can interrupt later events.
+      const terminalState = name === 'state' && ['ejecting', 'gameover', 'victory'].includes(payload.state);
+      if (terminalState || name === 'progression' || name === 'checkpoint') saveRun();
+      if (terminalState || name === 'gameover' || name === 'victory') saveBestScore();
       cloud.event(name, payload);
       if (loggedEvents.has(name)) console.info(`[Fighter Era / ${name}]`, { state: game && game.state, stage: game && game.stage, score: game && game.score, payload });
     } });
-    game.setSavedCheckpoint(checkpoint);
     cloud.bind(game);
+    if (legacyRulesDetected) {
+      console.info('[Fighter Era / save-rules]', { version: 2, legacySavesIgnored: true });
+      wx.showToast({ title: '肉鸽规则已启用，旧成长不再使用', icon: 'none', duration: 5000,
+        fail: failure => console.error('[Fighter Era] Rule notice failed', failure) });
+      if (!cloud.account) saveRun();
+    }
     if (cloud.account) {
-      saveProfile(); saveCheckpoint();
+      saveRun();
       savedBestScore = bestScore;
       if (bestScoreStorageAvailable) {
         try { wx.setStorageSync(bestScoreKey, bestScore); }

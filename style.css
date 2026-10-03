@@ -38,6 +38,7 @@ h1 span { display: block; color: #9cb0ca; font-size: 18px; letter-spacing: 1.9px
 .tier-track li.is-unlocked span { color: #a08c70; }
 .tier-track li.is-unlocked strong { color: #dfc697; }
 .pilot-note { margin: 15px 0 0; color: #64748a; font-size: 8px; letter-spacing: .25px; }
+.run-rules-note { color: #9aaac0; font-size: 10px; line-height: 1.8; padding-left: 11px; border-left: 2px solid #a08760; margin: 14px 0 0; }
 .controls-note { display: flex; gap: 12px; padding: 18px 0; margin-top: 18px; border-bottom: 1px solid #223147; }
 .gesture-icon { display: flex; width: 33px; height: 33px; flex-shrink: 0; align-items: center; justify-content: center; border: 1px solid #314460; border-radius: 5px; background: #142239; color: #9cb5da; font-size: 19px; }
 .controls-note strong { font-size: 11px; color: #b8cbe3; font-weight: 500; letter-spacing: .5px; }

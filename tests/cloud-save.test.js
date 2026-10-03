@@ -1,15 +1,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { CloudSave, CloudSaveError, STORAGE_KEY } = require('../src/cloud-save.js');
+const { CloudSave, CloudSaveError, STORAGE_KEY, LEGACY_STORAGE_KEY } = require('../src/cloud-save.js');
 
 const copy = value => JSON.parse(JSON.stringify(value));
 function initialAccount(id = 'pilot-a') {
-  return { user: { id }, revision: 0, profile: { version: 1, totalXp: 0 }, bestScore: 0,
+  return { user: { id }, revision: 0, profile: { version: 2, totalXp: 0 }, bestScore: 0,
     highestClearedStage: 0, checkpoint: null, inventory: { bomb: 2, support: 1 }, migrationAllowed: true };
 }
 function runSnapshot(xp = 12, overrides = {}) {
-  return Object.assign({ profile: { version: 1, totalXp: xp }, bestScore: 20, highestClearedStage: 0,
-    checkpoint: null, run: { id: 'run-a', stage: 0, score: 20, kills: 2, status: 'active' }, stageResults: [] }, overrides);
+  return Object.assign({ profile: { version: 2, totalXp: xp }, bestScore: 20, highestClearedStage: 0,
+    checkpoint: { version: 2, totalXp: 0, runStartXp: 0 }, run: { id: 'run-a', stage: 0, score: 20, kills: 2, status: 'active' }, stageResults: [] }, overrides);
 }
 function apiError(status, code) {
   return Object.assign(new Error(code), { status, details: { error: { code, message: code, currentRevision: 8 } } });
@@ -186,7 +186,7 @@ test('local migration reuses its persisted ID after a committed response is lost
   const f = fixture({ afterCommit: () => { if (lost) { lost = false; throw new Error('migration response lost'); } } });
   const cloud = f.create();
   await cloud.login('code-a');
-  const local = { profile: { version: 1, totalXp: 80 }, bestScore: 456, checkpoint: null };
+  const local = { profile: { version: 2, totalXp: 80 }, bestScore: 456, checkpoint: { version: 2, totalXp: 80, runStartXp: 0 } };
   await assert.rejects(cloud.importLocal(local));
   const original = copy(f.calls.at(-1).body);
   const reloaded = f.create();
@@ -267,10 +267,10 @@ test('offline consecutive runs preserve both terminal records in FIFO order acro
   cloud.enqueue(first);
   f.intercept(request => { if (request.path === '/v1/me/save') throw new Error('offline'); });
   await assert.rejects(cloud.flush());
-  cloud.enqueue(runSnapshot(30, { run: { ...first.run, status: 'defeated' } }));
+  cloud.enqueue(runSnapshot(0, { checkpoint: null, run: { ...first.run, status: 'defeated' } }));
   const second = runSnapshot(42, { run: { ...first.run, id: 'run-b' } });
   cloud.enqueue(second);
-  cloud.enqueue(runSnapshot(54, { run: { ...second.run, status: 'defeated' } }));
+  cloud.enqueue(runSnapshot(0, { checkpoint: null, run: { ...second.run, status: 'defeated' } }));
   assert.equal(f.memory.get(STORAGE_KEY).queue.length, 2);
   f.intercept(null);
   const reloaded = f.create();
@@ -280,7 +280,7 @@ test('offline consecutive runs preserve both terminal records in FIFO order acro
     ['run-a', 'active'], ['run-a', 'defeated'], ['run-b', 'defeated']
   ]);
   assert.deepEqual(f.accepted.map(item => item.expectedRevision), [0, 1, 2]);
-  assert.equal(reloaded.getAccount().profile.totalXp, 54);
+  assert.equal(reloaded.getAccount().profile.totalXp, 0);
 });
 
 test('coalescing preserves completed-stage evidence and uses one result per stage', async () => {
@@ -298,7 +298,7 @@ test('queue capacity is explicit and preserves all accepted local records', asyn
   const f = fixture();
   const cloud = f.create();
   await cloud.login('code-a');
-  for (let i = 0; i < 100; i++) cloud.enqueue(runSnapshot(12 + i, { run: { id: 'run-' + i, stage: 0, score: 20, kills: 2, status: 'defeated' } }));
+  for (let i = 0; i < 100; i++) cloud.enqueue(runSnapshot(0, { checkpoint: null, run: { id: 'run-' + i, stage: 0, score: 20, kills: 2, status: 'defeated' } }));
   assert.throws(() => cloud.enqueue(runSnapshot(112, { run: { id: 'overflow', stage: 0, score: 20, kills: 2, status: 'active' } })), error => error.code === 'OUTBOX_FULL');
   assert.equal(f.memory.get(STORAGE_KEY).queue.length, 100);
 });
@@ -326,4 +326,35 @@ test('snapshot validation rejects NaN and cycles before altering durable state',
   cyclic.checkpoint = cyclic;
   assert.throws(() => cloud.enqueue(cyclic), /cycles/);
   assert.equal(f.memory.has(STORAGE_KEY), false);
+});
+
+
+test('legacy outbox is explicitly archived without resurrecting old XP or defeated checkpoints', async () => {
+  const legacy = { version: 1, accountId: 'pilot-a', pending: null, queue: [
+    { ...runSnapshot(90), profile: { version: 1, totalXp: 90 }, checkpoint: { version: 1 }, run: { id: 'old-dead-run', stage: 0, score: 20, kills: 2, status: 'defeated' } }
+  ], consumption: { item: 'bomb', mutationId: 'old-inventory', attempts: 1, state: 'pending', result: null }, conflict: null };
+  const f = fixture({ memory: new Map([[STORAGE_KEY, copy(legacy)]]) });
+  const cloud = f.create();
+  assert.deepEqual(f.memory.get(LEGACY_STORAGE_KEY), legacy);
+  assert.equal(f.memory.get(STORAGE_KEY).version, 2);
+  assert.deepEqual(f.memory.get(STORAGE_KEY).queue, []);
+  assert.deepEqual(cloud.getPendingConsumption(), { accountId: 'pilot-a', ...legacy.consumption });
+  await cloud.login('code-a');
+  await cloud.flush();
+  assert.equal(f.accepted.length, 0);
+  assert.equal(cloud.getAccount().profile.totalXp, 0);
+});
+
+test('roguelike terminal snapshot rejects nonzero XP or a surviving checkpoint before persistence', async () => {
+  const f = fixture(); const cloud = f.create(); await cloud.login('code-a');
+  assert.throws(() => cloud.enqueue(runSnapshot(30, { run: { id: 'dead', stage: 0, score: 30, kills: 1, status: 'defeated' } })), /Ended roguelike/);
+  assert.equal(f.memory.has(STORAGE_KEY), false);
+});
+
+test('legacy outbox migration write failure retains the original queue and stops startup', () => {
+  const legacy = { version: 1, accountId: 'pilot-a', pending: null, queue: [], consumption: null, conflict: null };
+  const f = fixture({ memory: new Map([[STORAGE_KEY, copy(legacy)]]) });
+  f.failWrites();
+  assert.throws(() => f.create(), error => error.code === 'OUTBOX_MIGRATION_FAILED');
+  assert.deepEqual(f.memory.get(STORAGE_KEY), legacy);
 });

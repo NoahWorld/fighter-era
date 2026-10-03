@@ -215,14 +215,7 @@
         case 'upgrade': return game.upgradeOptions.map((option, i) => ({
           id: 'upgrade:' + option.id, label: option.title, x: 29, y: 283 + i * 86, w: 347, h: 74, disabled: false,
         }));
-        case 'gameover': if (game.savedCheckpoint) return [
-          { id: 'continue', label: '从第 ' + (game.savedCheckpoint.stage + 1) + ' 关起点继续', x: 53, y: 458, w: 299, h: 54, disabled: false },
-          { id: 'restart', label: '重新出击', x: 53, y: 525, w: 299, h: 54, disabled: false },
-          { id: 'home', label: '返回机库', x: 53, y: 592, w: 299, h: 47, disabled: false },
-        ];
-        // A final victory clears its checkpoint, so no continuation is offered.
-        // Falls through to the ordinary result controls when no save exists.
-        // eslint-disable-next-line no-fallthrough
+        case 'gameover':
         case 'victory': return [
           { id: 'restart', label: game.state === 'victory' ? '再次出击' : '重新出击', x: 53, y: 458, w: 299, h: 54, disabled: false },
           { id: 'home', label: '返回机库', x: 53, y: 525, w: 299, h: 47, disabled: false },
@@ -390,7 +383,7 @@
       const ctx = this.ctx;
       const p = game.player;
       ctx.fillStyle = 'rgba(3,10,21,0.28)'; ctx.fillRect(0, 0, W, H);
-      const appearance = Math.min(game.progression.level, 10) - 1;
+      const appearance = Math.min((game.resultProgression || game.progression).level, 10) - 1;
       const frame = this.assets.frames.player[appearance];
       const wreckFade = 1 - smooth((t - 0.7) / 1.1);
       if (wreckFade > 0) {
@@ -838,7 +831,7 @@
         this.text(model.title, x + 40, 479, 11, active ? '#f0d6a9' : unlocked ? '#abbcd1' : '#687a92', '500', 'center');
         this.text('Lv.' + model.level, x + 40, 496, 8, active ? '#c0a375' : '#60758f', '400', 'center');
       });
-      this.text('永久经验', 34, 528, 9, '#7c92ae');
+      this.text('本局成长 · 失败后重置', 34, 528, 9, '#7c92ae');
       this.text(p.xp + ' / ' + p.nextXp, 371, 528, 9, '#a5b5ca', '500', 'right');
       this.box(34, 544, 337, 3, '#25344a', null, 1.5);
       this.box(34, 544, 337 * Math.min(1, p.xp / p.nextXp), 3, C.gold, null, 1.5);
@@ -938,7 +931,7 @@
       const paused = game.state === 'paused';
       const victory = game.state === 'victory';
       const y = paused ? 188 : 133;
-      this.box(28, y, 349, paused ? 353 : game.state === 'gameover' && game.savedCheckpoint ? 530 : 463, '#101d30', '#35475f', 18);
+      this.box(28, y, 349, paused ? 353 : 463, '#101d30', '#35475f', 18);
       this.line(56, y + 1, 349, y + 1, '#9a815c', 1);
       const accent = victory ? C.gold : paused ? C.blue : '#e5ab87';
       this.circle(W / 2, y + 60, 26, '#1b2a40', '#3c5069');
@@ -953,14 +946,14 @@
         ctx.fillStyle = accent; ctx.fillRect(201.5, y + 65, 2, 2);
       }
       this.text(paused ? '战机待命' : victory ? '最终 BOSS 已击败' : '我方战机已被击败', W / 2, y + 108, 25, C.text, '600', 'center');
-      this.text(paused ? '准备好，继续穿越星海。' : victory ? game.stageCount + ' 关全部突破，群星见证你的航迹。' : '经验已经积累，下次出击更强。', W / 2, y + 143, 11, '#91a3bd', '400', 'center');
+      this.text(paused ? '准备好，继续穿越星海。' : victory ? game.stageCount + ' 关全部突破，群星见证你的航迹。' : '本局成长已重置 · 再次出击从第 1 关开始', W / 2, y + 143, 11, '#91a3bd', '400', 'center');
       if (!paused) {
         this.text(String(game.score).padStart(6, '0'), W / 2, 327, 42, accent, '500', 'center');
         this.text('击落 ' + game.kills + ' 架  /  抵达第 ' + (game.stage + 1) + ' 关', W / 2, 365, 10, '#8c9fb9', '400', 'center');
-        this.text('永久成长  ·  Lv.' + game.progression.level + ' ' + game.progression.title, W / 2, 401, 12, '#d9c093', '500', 'center');
-        this.box(90, 422, 225, 3, '#28374c', null, 1.5);
-        this.box(90, 422, 225 * Math.min(1, game.progression.xp / game.progression.nextXp), 3, C.gold, null, 1.5);
-        this.text('本次 +' + (game.progression.totalXp - game.runStartXp) + ' XP · 已计入永久经验', W / 2, 441, 9, '#879bb7', '400', 'center');
+        const result = game.resultProgression || game.progression;
+        this.text('本局成长  ·  Lv.' + result.level + ' ' + result.title, W / 2, 401, 12, '#d9c093', '500', 'center');
+        this.text('本局获得 ' + result.totalXp + ' XP · 下局重新成长', W / 2, 421, 9, '#879bb7', '400', 'center');
+        if (!victory) this.text('广告 / 充值复活待开放', W / 2, 441, 9, '#879bb7', '400', 'center');
       }
       this.getButtons(game).forEach(button => this.button(button, button.id === 'home' || button.id === 'restart' && Boolean(game.savedCheckpoint)));
     }
@@ -992,7 +985,7 @@
         this.line(button.x + button.w - 22, button.y + 33, button.x + button.w - 18, button.y + 37, '#93adcb', 1.5);
         this.line(button.x + button.w - 18, button.y + 37, button.x + button.w - 22, button.y + 41, '#93adcb', 1.5);
       });
-      this.text('机库等级 Lv.' + game.progression.level + ' · ' + game.progression.title, W / 2, 588, 11, '#b8a17d', '400', 'center');
+      this.text('本局成长 Lv.' + game.progression.level + ' · ' + game.progression.title, W / 2, 588, 11, '#b8a17d', '400', 'center');
     }
   }
 

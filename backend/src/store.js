@@ -36,7 +36,7 @@ async function readAccount(client, userId, save) {
   return {
     user: { id: userId },
     revision: record.revision,
-    profile: { version: 1, totalXp: Number(record.total_xp) },
+    profile: { version: 2, totalXp: Number(record.total_xp) },
     bestScore: Number(record.best_score),
     highestClearedStage: record.highest_cleared_stage,
     checkpoint: record.checkpoint,
@@ -57,15 +57,15 @@ function validateCheckpointRelations(checkpoint, totalXp) {
   try { validateCheckpoint(checkpoint); }
   catch (error) { throw new ApiError(400, 'INVALID_CHECKPOINT', error.message); }
   if (checkpoint.player.hp > checkpoint.player.maxHp) throw new ApiError(400, 'INVALID_CHECKPOINT', '续关生命值超过上限');
-  if (checkpoint.runStartXp > totalXp) throw new ApiError(400, 'INVALID_CHECKPOINT', '续关起始经验超过账号经验');
+  if (checkpoint.runStartXp !== 0 || checkpoint.totalXp > totalXp) throw new ApiError(400, 'INVALID_CHECKPOINT', '肉鸽续关必须从零经验开局，边界经验不能超过当前经验');
   if (checkpoint.phase === 'upgrade' && checkpoint.stage === 99) throw new ApiError(400, 'INVALID_CHECKPOINT', '最后一关不能等待关卡升级');
 }
 
 export function createStore(pool, config) {
   return {
     async health() {
-      const result = await pool.query("SELECT version FROM schema_migrations WHERE version = '001_initial.sql'");
-      if (result.rowCount !== 1) throw new Error('Required database migration 001_initial.sql is missing');
+      const result = await pool.query("SELECT version FROM schema_migrations WHERE version IN ('001_initial.sql','002_roguelike_saves.sql')");
+      if (result.rowCount !== 2) throw new Error('Required database migrations 001_initial.sql and 002_roguelike_saves.sql are missing');
     },
     async createSession(openid) {
       return transaction(pool, async client => {
@@ -94,6 +94,8 @@ export function createStore(pool, config) {
         const duplicate = await previousMutation(client, 'save_mutations', userId, body);
         if (duplicate) return duplicate;
         if (save.revision !== 0 || save.imported_at !== null) throw new ApiError(409, 'IMPORT_NOT_ALLOWED', '已有云端存档，不能覆盖导入', { currentRevision: save.revision });
+        if (body.profile.version !== 2) throw new ApiError(400, 'LEGACY_SAVE_REJECTED', '旧版永久经验存档不能导入肉鸽模式');
+        if (body.checkpoint === null && body.profile.totalXp !== 0) throw new ApiError(400, 'INVALID_RUN_XP', '没有存活对局时经验必须为零');
         validateCheckpointRelations(body.checkpoint, body.profile.totalXp);
         const highest = body.checkpoint ? body.checkpoint.stage + (body.checkpoint.phase === 'upgrade' ? 1 : 0) : 0;
         await client.query('UPDATE player_saves SET total_xp=$2,best_score=$3,checkpoint=$4,highest_cleared_stage=$5,revision=1,imported_at=now(),updated_at=now() WHERE user_id=$1', [userId, body.profile.totalXp, body.bestScore, body.checkpoint, highest]);
@@ -108,11 +110,18 @@ export function createStore(pool, config) {
         const duplicate = await previousMutation(client, 'save_mutations', userId, body);
         if (duplicate) return duplicate;
         if (save.revision !== body.expectedRevision) throw new ApiError(409, 'SAVE_CONFLICT', '其他设备已更新存档，请重新加载', { currentRevision: save.revision });
-        if (body.profile.totalXp < Number(save.total_xp)) throw new ApiError(400, 'PROGRESSION_DECREASE', '账号经验不能减少');
+        if (body.profile.version !== 2) throw new ApiError(400, 'LEGACY_SAVE_REJECTED', '旧版永久经验存档不能写入肉鸽模式');
+        const terminal = body.run.status !== 'active';
+        if (terminal && (body.checkpoint !== null || body.profile.totalXp !== 0)) throw new ApiError(400, 'TERMINAL_SAVE_NOT_RESET', '对局结束后必须清空经验和续关记录');
+        if (!terminal && body.checkpoint === null && body.profile.totalXp !== 0) throw new ApiError(400, 'INVALID_RUN_XP', '没有存活续关记录时经验必须为零');
         validateCheckpointRelations(body.checkpoint, body.profile.totalXp);
         const previousRun = (await client.query('SELECT * FROM game_runs WHERE user_id=$1 AND id=$2', [userId, body.run.id])).rows[0];
         if (previousRun && (previousRun.status !== 'active' || body.run.stage < previousRun.stage || body.run.score < Number(previousRun.score) || body.run.kills < previousRun.kills)) {
           throw new ApiError(409, 'INVALID_RUN_TRANSITION', '对局状态、分数和击杀数不能回退或重复结算');
+        }
+        if (previousRun && !terminal && body.profile.totalXp < Number(save.total_xp)) {
+          const restoredBoundary = body.checkpoint && save.checkpoint && canonical(body.checkpoint) === canonical(save.checkpoint) && body.profile.totalXp === body.checkpoint.totalXp;
+          if (!restoredBoundary) throw new ApiError(400, 'PROGRESSION_DECREASE', '同一存活对局经验减少只能恢复已保存的关卡边界');
         }
         const stages = body.stageResults.map(item => item.stage);
         if (new Set(stages).size !== stages.length) throw new ApiError(400, 'INVALID_STAGE_RESULTS', '单次提交不能重复关卡结算');

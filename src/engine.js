@@ -63,18 +63,19 @@
   // Shared by the clients and service so saved combat rules cannot drift.
   function validateCheckpoint(value) {
     if (value === null) return null;
-    exactKeys(value, ['version', 'phase', 'stage', 'seed', 'randomState', 'entityId', 'totalTime', 'score', 'kills', 'runStartXp', 'player', 'fireInterval', 'damageBonus', 'freeCharges'], 'checkpoint');
+    exactKeys(value, ['version', 'phase', 'stage', 'seed', 'randomState', 'entityId', 'totalTime', 'score', 'kills', 'runStartXp', 'totalXp', 'player', 'fireInterval', 'damageBonus', 'freeCharges'], 'checkpoint');
     exactKeys(value.player, ['hp', 'maxHp', 'weaponLevel'], 'checkpoint player');
     exactKeys(value.freeCharges, ['bomb', 'support'], 'checkpoint freeCharges');
-    if (value.version !== 1 || !['stage', 'upgrade'].includes(value.phase)
+    if (value.version !== 2 || !['stage', 'upgrade'].includes(value.phase)
       || !Number.isInteger(value.stage) || value.stage < 0 || value.stage >= STAGES.length
       || (value.phase === 'upgrade' && value.stage === STAGES.length - 1)) throw new RangeError('Invalid checkpoint version, phase or stage');
     for (const field of ['seed', 'randomState']) {
       if (!Number.isInteger(value[field]) || value[field] < 0 || value[field] > 0xffffffff) throw new RangeError('Invalid checkpoint ' + field + ': expected uint32');
     }
-    for (const field of ['entityId', 'score', 'kills', 'runStartXp']) {
+    for (const field of ['entityId', 'score', 'kills', 'runStartXp', 'totalXp']) {
       if (!Number.isSafeInteger(value[field]) || value[field] < 0) throw new RangeError('Invalid checkpoint ' + field + ': expected non-negative safe integer');
     }
+    if (value.runStartXp !== 0) throw new RangeError('Invalid checkpoint experience baseline: roguelike runs start at zero');
     if (!Number.isFinite(value.totalTime) || value.totalTime < 0 || value.totalTime > 1e9) throw new RangeError('Invalid checkpoint totalTime');
     if (!Number.isSafeInteger(value.player.hp) || !Number.isSafeInteger(value.player.maxHp)
       || value.player.hp < 1 || value.player.maxHp < value.player.hp
@@ -84,8 +85,8 @@
     for (const item of ['bomb', 'support']) {
       if (![0, 1].includes(value.freeCharges[item])) throw new RangeError('Invalid checkpoint free charge: ' + item);
     }
-    return { version: 1, phase: value.phase, stage: value.stage, seed: value.seed, randomState: value.randomState,
-      entityId: value.entityId, totalTime: value.totalTime, score: value.score, kills: value.kills, runStartXp: value.runStartXp,
+    return { version: 2, phase: value.phase, stage: value.stage, seed: value.seed, randomState: value.randomState,
+      entityId: value.entityId, totalTime: value.totalTime, score: value.score, kills: value.kills, runStartXp: value.runStartXp, totalXp: value.totalXp,
       player: { ...value.player }, fireInterval: value.fireInterval, damageBonus: value.damageBonus, freeCharges: { ...value.freeCharges } };
   }
 
@@ -97,16 +98,21 @@
       if (!Number.isFinite(this.bestScore) || this.bestScore < 0) throw new TypeError('Game bestScore must be a non-negative number');
       this.seed = options.seed === undefined ? 73 : options.seed;
       if (!Number.isInteger(this.seed)) throw new TypeError('Game seed must be an integer');
-      const profile = options.profile === undefined ? { version: 1, totalXp: 0 } : options.profile;
-      if (!profile || profile.version !== 1 || !Number.isSafeInteger(profile.totalXp) || profile.totalXp < 0) throw new TypeError('Invalid game profile: expected version 1 and non-negative safe integer totalXp');
-      this.profile = { version: 1, totalXp: profile.totalXp };
+      const profile = options.profile === undefined ? { version: 2, totalXp: 0 } : options.profile;
+      if (!profile || profile.version !== 2 || !Number.isSafeInteger(profile.totalXp) || profile.totalXp < 0) throw new TypeError('Invalid game profile: expected version 2 and non-negative safe integer totalXp');
+      const checkpoint = validateCheckpoint(options.checkpoint === undefined ? null : options.checkpoint);
+      if (checkpoint && checkpoint.totalXp > profile.totalXp) throw new RangeError('Checkpoint experience exceeds the player profile');
+      // Experience belongs to a surviving run. An orphaned profile must never
+      // equip a new pilot or revive an old run when there is no continuation.
+      this.profile = { version: 2, totalXp: checkpoint ? checkpoint.totalXp : 0 };
       this.stageCount = STAGES.length;
       this.minFireInterval = MIN_FIRE_INTERVAL;
-      this.progression = progressionFor(profile.totalXp);
+      this.progression = progressionFor(this.profile.totalXp);
       this._savedCheckpoint = null;
       this.inventory = Object.freeze({ bomb: 0, support: 0 });
       this.state = 'menu';
       this.resetRun();
+      this.storeCheckpoint(checkpoint, false);
     }
 
     emit(name, payload = {}) { if (this.onEvent) this.onEvent(name, payload); }
@@ -121,14 +127,18 @@
     }
     setSavedCheckpoint(value) {
       if (!['menu', 'gameover', 'victory'].includes(this.state)) throw new Error('Cannot replace a checkpoint during an active run');
-      this.storeCheckpoint(value, false);
+      const checkpoint = validateCheckpoint(value);
+      if (checkpoint && this.state !== 'menu') throw new Error('A finished run cannot receive a continuation without verified revival');
+      this.storeCheckpoint(checkpoint, false);
+      this.setRunExperience(checkpoint ? checkpoint.totalXp : 0);
+      this.resetRun();
     }
-    captureCheckpoint(phase = 'stage') {
-      this.storeCheckpoint({ version: 1, phase, stage: this.stage, seed: this.seed >>> 0, randomState: this.randomState,
-        entityId: this.id, totalTime: this.totalTime, score: this.score, kills: this.kills, runStartXp: this.runStartXp,
+    captureCheckpoint(phase = 'stage', emit = true) {
+      this.storeCheckpoint({ version: 2, phase, stage: this.stage, seed: this.seed >>> 0, randomState: this.randomState,
+        entityId: this.id, totalTime: this.totalTime, score: this.score, kills: this.kills, runStartXp: this.runStartXp, totalXp: this.profile.totalXp,
         player: { hp: this.player.hp, maxHp: this.player.maxHp, weaponLevel: this.player.weaponLevel },
         fireInterval: this.fireInterval, damageBonus: this.damageBonus,
-        freeCharges: { bomb: this.bombCharges, support: this.supportCharges } }, true);
+        freeCharges: { bomb: this.bombCharges, support: this.supportCharges } }, emit);
     }
     updateCheckpointCharges() {
       if (!this._savedCheckpoint || this._savedCheckpoint.phase !== 'stage') throw new Error('No stage checkpoint for ability consumption');
@@ -151,9 +161,9 @@
       else this.setInventory({ ...this.inventory, [type]: this.inventory[type] - 1 });
     }
     continueRun() {
-      if (!['menu', 'gameover'].includes(this.state) || !this._savedCheckpoint) return false;
+      if (this.state !== 'menu' || !this._savedCheckpoint) return false;
       const checkpoint = this.getCheckpoint();
-      if (checkpoint.runStartXp > this.profile.totalXp) throw new RangeError('Checkpoint experience baseline exceeds the player profile');
+      this.setRunExperience(checkpoint.totalXp);
       this.resetRun();
       this.seed = checkpoint.seed;
       this.randomState = checkpoint.randomState;
@@ -170,12 +180,27 @@
       this.prepareStage();
       this.supportCharges = checkpoint.freeCharges.support;
       this.bombCharges = checkpoint.freeCharges.bomb;
+      this.emit('progression', this.getProfile());
       this.storeCheckpoint(checkpoint, true);
       if (checkpoint.phase === 'upgrade') { this.bossSpawned = true; this.progress = 1; this.setState('upgrade'); }
       else { this.setState('launching'); this.emit('cinematic', { phase: 'launch', stage: this.stage }); }
       return true;
     }
     restoreCheckpoint(value) { this.setSavedCheckpoint(value); return this.continueRun(); }
+    setRunExperience(totalXp) {
+      this.profile = { version: 2, totalXp };
+      this.progression = progressionFor(totalXp);
+    }
+    clearRunGrowth() {
+      this.setRunExperience(0);
+      this.player.shipLevel = 1;
+      this.player.tier = 1;
+      this.player.maxHp = 5;
+      this.player.weaponLevel = 1;
+      this.fireInterval = 0.16;
+      this.damageBonus = 0;
+      this.levelUpTime = 0;
+    }
     addExperience(amount) {
       if (!Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(this.profile.totalXp + amount)) throw new RangeError('Experience amount and total must be positive safe integers');
       const previousLevel = this.progression.level;
@@ -218,7 +243,8 @@
       this.bombDuration = 0.9;
       this.cinematicTime = 0;
       this.pausedFrom = null;
-      this.runStartXp = this.profile.totalXp;
+      this.runStartXp = 0;
+      this.resultProgression = null;
       const maxHp = 5 + Math.floor((this.progression.level - 1) / 5);
       this.player = { x: WIDTH / 2, y: 596, r: 7, hp: maxHp, maxHp, invincible: 0, weaponLevel: 1, shield: 0,
         shipLevel: this.progression.level, tier: this.progression.tier };
@@ -260,12 +286,20 @@
       this.bannerTime = 2.4;
     }
     start() {
+      this.setRunExperience(0);
       this.resetRun();
-      this.captureCheckpoint();
+      this.captureCheckpoint('stage', false);
+      this.emit('progression', this.getProfile());
+      this.emit('checkpoint', { checkpoint: this.getCheckpoint() });
       this.setState('launching');
       this.emit('cinematic', { phase: 'launch', stage: this.stage });
     }
-    home() { this.resetRun(); this.setState('menu'); }
+    home() {
+      this.setRunExperience(this._savedCheckpoint ? this._savedCheckpoint.totalXp : 0);
+      this.resetRun();
+      this.setState('menu');
+      this.emit('progression', this.getProfile());
+    }
     isActive() { return this.state === 'playing' || this.state === 'launching' || this.state === 'ejecting'; }
     pause() {
       if (!this.isActive()) return;
@@ -651,17 +685,31 @@
       this.emit('hurt', { hp: this.player.hp });
       if (this.player.hp <= 0) {
         this.endSupport('player-defeated');
+        this.resultProgression = Object.freeze({ ...this.progression });
+        this.storeCheckpoint(null, false);
+        this.clearRunGrowth();
+        this.bestScore = Math.max(this.bestScore, this.score);
         this.cinematicTime = 0;
         this.bossWarningTime = 0;
         this.setState('ejecting');
+        this.emit('progression', this.getProfile());
+        this.emit('checkpoint', { checkpoint: null, reason: 'defeated' });
         this.emit('cinematic', { phase: 'eject', stage: this.stage });
       }
     }
     finish(state) {
       this.bossWarningTime = 0;
-      if (state === 'victory') this.storeCheckpoint(null, true);
+      if (state === 'victory') {
+        this.resultProgression = Object.freeze({ ...this.progression });
+        this.storeCheckpoint(null, false);
+        this.clearRunGrowth();
+      }
       this.bestScore = Math.max(this.bestScore, this.score);
       this.setState(state);
+      if (state === 'victory') {
+        this.emit('progression', this.getProfile());
+        this.emit('checkpoint', { checkpoint: null, reason: 'victory' });
+      }
       this.emit(state, { score: this.score, stage: this.stage, kills: this.kills });
     }
   }

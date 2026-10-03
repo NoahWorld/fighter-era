@@ -62,7 +62,8 @@ test('every launch freezes combat until boarding and takeoff complete, then anno
   game.hurt();
   advance(game, 3, 0.25);
   assert.deepEqual({ ...snapshot(game), cinematicTime: 0 }, before);
-  assert.equal(events.filter(event => ['stage', 'shot', 'hurt', 'progression', 'pickup'].includes(event.name)).length, 0);
+  assert.equal(events.filter(event => ['stage', 'shot', 'hurt', 'pickup'].includes(event.name)).length, 0);
+  assert.deepEqual(events.filter(event => event.name === 'progression').map(event => event.payload), [{ version: 2, totalXp: 0 }], 'new runs durably reset growth before launching');
   assert.ok(Math.abs(game.cinematicTime - 3) < 1e-8);
 
   game.update(0.2);
@@ -94,7 +95,7 @@ test('lethal collision ejects the pilot while the battlefield freezes, then sett
   assert.equal(game.isActive(), true);
   assert.equal(game.player.hp, 0);
   assert.equal(game.cinematicTime, 0);
-  assert.equal(game.bestScore, 30);
+  assert.equal(game.bestScore, 800, 'the death boundary records the score even if ejection is interrupted');
   assert.deepEqual(events.filter(event => event.name === 'cinematic').map(event => event.payload), [
     { phase: 'launch', stage: 0 }, { phase: 'eject', stage: 0 }
   ]);
@@ -163,9 +164,9 @@ test('both cinematics pause and resume at the same point without restarting thei
   }
 });
 
-test('restart and home discard paused cinematics while retaining the pilot profile', () => {
+test('restart and home discard paused cinematics without retaining dead or orphaned growth', () => {
   const events = [];
-  const game = new Game({ profile: { version: 1, totalXp: 160 }, onEvent: (name, payload) => events.push({ name, payload }) });
+  const game = new Game({ profile: { version: 2, totalXp: 160 }, onEvent: (name, payload) => events.push({ name, payload }) });
   for (const state of ['launching', 'ejecting']) {
     game.start();
     if (state === 'ejecting') {
@@ -184,7 +185,7 @@ test('restart and home discard paused cinematics while retaining the pilot profi
     assert.equal(game.pausedFrom, null);
     assert.equal(game.totalTime, 0);
     assert.equal(game.player.hp, game.player.maxHp);
-    assert.deepEqual(game.getProfile(), { version: 1, totalXp: 160 });
+    assert.deepEqual(game.getProfile(), { version: 2, totalXp: 0 });
     game.update(0.25);
     game.pause();
     game.home();
@@ -521,7 +522,7 @@ test('repair upgrade increases armor capacity and heals by the advertised amount
   assert.equal(game.state, 'playing');
 });
 
-test('lethal damage settles after ejection, and restart clears run state while preserving best score', () => {
+test('lethal damage records the highest score immediately, shows results after ejection, and restart clears run growth', () => {
   const game = quietGame({ seed: 123, bestScore: 500 });
   game.addExperience(165);
   game.setState('upgrade');
@@ -534,7 +535,7 @@ test('lethal damage settles after ejection, and restart clears run state while p
   game.enemyBullets.push(bulletAt(game.player));
   game.update(STEP);
   assert.equal(game.state, 'ejecting');
-  assert.equal(game.bestScore, 500, 'the record is saved only when ejection finishes');
+  assert.equal(game.bestScore, 740, 'the fatal hit records the completed score before ejection finishes');
   advance(game, game.ejectionDuration);
   assert.equal(game.state, 'gameover');
   assert.equal(game.player.hp, 0);
@@ -597,15 +598,18 @@ test('4 FPS updates preserve gameplay outcomes and projectile motion through fix
 });
 
 test('pilot profiles validate their schema, numeric safety, and copy ownership', () => {
-  assert.deepEqual(new Game().getProfile(), { version: 1, totalXp: 0 });
+  assert.deepEqual(new Game().getProfile(), { version: 2, totalXp: 0 });
   for (const profile of [
-    null, [], 'profile', {}, { version: 1 }, { totalXp: 0 },
-    { version: 2, totalXp: 0 }, { version: '1', totalXp: 0 },
-    ...[-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '60'].map(totalXp => ({ version: 1, totalXp }))
+    null, [], 'profile', {}, { version: 2 }, { totalXp: 0 },
+    { version: 1, totalXp: 0 }, { version: '2', totalXp: 0 },
+    ...[-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '60'].map(totalXp => ({ version: 2, totalXp }))
   ]) assert.throws(() => new Game({ profile }), undefined, 'invalid profile: ' + JSON.stringify(profile));
 
-  const input = { version: 1, totalXp: 61 };
-  const game = new Game({ profile: input });
+  const source = started();
+  source.addExperience(61);
+  source.captureCheckpoint();
+  const input = { version: 2, totalXp: 61 };
+  const game = new Game({ profile: input, checkpoint: source.getCheckpoint() });
   input.totalXp = 900;
   assert.equal(game.getProfile().totalXp, 61, 'caller mutation must not change the loaded profile');
   const exported = game.getProfile();
@@ -618,7 +622,9 @@ test('pilot profiles validate their schema, numeric safety, and copy ownership',
 
 test('experience carries across boundaries and can unlock several ship levels in one award', () => {
   const events = [];
-  const game = started({ profile: { version: 1, totalXp: 59 }, onEvent: (name, payload) => events.push({ name, payload }) });
+  const game = started({ onEvent: (name, payload) => events.push({ name, payload }) });
+  game.addExperience(59);
+  events.length = 0;
   game.addExperience(1);
   assert.equal(game.progression.level, 2);
   assert.equal(game.progression.xp, 0);
@@ -646,7 +652,8 @@ test('ship tier unlocks occur at the documented cumulative experience boundaries
     [0, 1, 1, '游隼'], [159, 2, 1, '游隼'], [160, 3, 2, '破晓'],
     [699, 5, 2, '破晓'], [700, 6, 3, '雷霆'], [1979, 9, 3, '雷霆'], [1980, 10, 4, '星曜']
   ]) {
-    const game = started({ profile: { version: 1, totalXp } });
+    const game = started();
+    if (totalXp > 0) game.addExperience(totalXp);
     assert.equal(game.progression.level, level, 'level for total experience ' + totalXp);
     assert.equal(game.progression.tier, tier);
     assert.equal(game.progression.title, title);
@@ -656,7 +663,8 @@ test('ship tier unlocks occur at the documented cumulative experience boundaries
 });
 
 test('invalid experience awards and cumulative overflow fail without corrupting the profile', () => {
-  const game = started({ profile: { version: 1, totalXp: 60 } });
+  const game = started();
+  game.addExperience(60);
   const before = snapshot(game);
   for (const amount of [0, -1, 0.25, NaN, Infinity, '10', undefined, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => game.addExperience(amount));
@@ -666,28 +674,38 @@ test('invalid experience awards and cumulative overflow fail without corrupting 
   assert.deepEqual(snapshot(game), before);
 });
 
-test('cumulative experience survives restart, return to hangar, and construction from a saved profile', () => {
-  const game = started({ profile: { version: 1, totalXp: 160 } });
-  game.addExperience(145);
-  assert.equal(game.runStartXp, 160, 'the run summary baseline must remain stable while earning experience');
+test('surviving boundary growth resumes, while new runs and orphaned profiles start at level one', () => {
+  const game = started();
+  game.addExperience(305);
+  game.spawnBoss();
+  game.destroyEnemy(game.enemies.find(enemy => enemy.type === 'boss'));
+  game.chooseUpgrade('spread');
   const profile = game.getProfile();
-  const progression = { ...game.progression };
-  game.start();
-  assert.equal(game.runStartXp, 305, 'a new run begins from the saved cumulative experience');
-  assert.deepEqual(game.getProfile(), profile);
-  assert.deepEqual(game.progression, progression);
+  const checkpoint = game.getCheckpoint();
+  assert.equal(game.runStartXp, 0);
+  game.addExperience(16);
   game.home();
   assert.equal(game.state, 'menu');
-  assert.deepEqual(game.getProfile(), profile);
-  assert.deepEqual(game.progression, progression);
-  const reloaded = started({ profile });
+  assert.deepEqual(game.getProfile(), profile, 'returning to the hangar rolls back unfinished stage XP together with waves');
+  const reloaded = new Game({ profile, checkpoint });
   assert.deepEqual(reloaded.getProfile(), profile);
-  assert.deepEqual(reloaded.progression, progression);
+  assert.equal(reloaded.continueRun(), true);
   assert.equal(reloaded.player.shipLevel, 4);
+  assert.equal(reloaded.stage, 1);
+  reloaded.start();
+  assert.equal(reloaded.runStartXp, 0);
+  assert.deepEqual(reloaded.getProfile(), { version: 2, totalXp: 0 });
+  assert.equal(reloaded.player.shipLevel, 1);
+  assert.equal(reloaded.stage, 0);
+  const orphaned = new Game({ profile });
+  assert.deepEqual(orphaned.getProfile(), { version: 2, totalXp: 0 });
+  assert.equal(orphaned.progression.level, 1);
+  assert.equal(orphaned.continueRun(), false);
 });
 
-test('permanent ship levels increase real projectile damage and stack with run upgrades', () => {
-  const game = quietGame({ profile: { version: 1, totalXp: 700 } });
+test('current run ship levels increase real projectile damage and stack with run upgrades', () => {
+  const game = quietGame();
+  game.addExperience(700);
   game.update(STEP);
   assert.equal(game.player.shipLevel, 6);
   assert.equal(game.playerBullets.length, 2);
@@ -699,21 +717,22 @@ test('permanent ship levels increase real projectile damage and stack with run u
   assert.ok(game.playerBullets.every(bullet => Math.abs(bullet.damage - 1.7) < 1e-10));
 });
 
-test('a level-up heals one armor, expands permanent capacity at level six, and preserves run armor', () => {
-  const game = quietGame({ profile: { version: 1, totalXp: 699 } });
+test('a level-up heals one armor, expands current run capacity, and a fresh run resets every strength upgrade', () => {
+  const game = quietGame();
+  game.addExperience(699);
   game.setState('upgrade');
   game.chooseUpgrade('repair');
   assert.equal(game.player.maxHp, 6);
   game.player.hp = 2;
   game.addExperience(1);
   assert.equal(game.player.shipLevel, 6);
-  assert.equal(game.player.maxHp, 7, 'permanent capacity must stack with the chosen armor upgrade');
+  assert.equal(game.player.maxHp, 7, 'current run growth stacks with the chosen armor upgrade');
   assert.equal(game.player.hp, 3);
   game.addExperience(1);
   assert.equal(game.player.hp, 3, 'ordinary experience gains must not repeatedly heal');
   game.start();
-  assert.equal(game.player.maxHp, 6, 'restart retains permanent armor but removes the run-only upgrade');
-  assert.equal(game.player.hp, 6);
+  assert.equal(game.player.maxHp, 5, 'restart removes all growth and armor upgrades');
+  assert.equal(game.player.hp, 5);
 });
 
 function generatedEncounter(type, options = {}) {
@@ -1065,7 +1084,8 @@ test('bombs reward ordinary enemies before the boss, retain screen-external enem
     assert.equal(game.state, result);
     assert.equal(game.kills, kills + 2);
     assert.equal(game.score, score + 80 + 2000 * (stage + 1));
-    assert.equal(game.getProfile().totalXp, xp + 130);
+    assert.equal(game.getProfile().totalXp, result === 'victory' ? 0 : xp + 130);
+    if (result === 'victory') assert.equal(game.resultProgression.totalXp, xp + 130, 'the completed run XP is a result statistic, not retained strength');
     assert.deepEqual(events.filter(event => event.name === 'explosion').map(event => event.payload.boss), [false, true]);
     assert.deepEqual(events.filter(event => event.name === 'boss').map(event => event.payload), [{ phase: 'defeated', stage, enemyId: boss.id }]);
     assert.ok(events.some(event => event.name === 'ability' && event.payload.reason === 'stage-complete'));

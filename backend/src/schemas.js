@@ -1,12 +1,12 @@
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', additionalProperties: false, properties, required });
 const int = (maximum, minimum = 0) => ({ type: 'integer', minimum, maximum });
 export const uuid = { type: 'string', format: 'uuid' };
-export const profile = object({ version: { const: 1 }, totalXp: int(100000000) });
+export const profile = object({ version: { const: 2 }, totalXp: int(100000000) });
 export const checkpoint = {
   anyOf: [
     { type: 'null' },
     object({
-      version: { const: 1 },
+      version: { const: 2 },
       phase: { enum: ['stage', 'upgrade'] },
       stage: int(99),
       seed: int(4294967295),
@@ -15,7 +15,8 @@ export const checkpoint = {
       totalTime: { type: 'number', minimum: 0, maximum: 1000000000 },
       score: int(1000000000),
       kills: int(1000000),
-      runStartXp: int(100000000),
+      runStartXp: { const: 0 },
+      totalXp: int(100000000),
       player: object({ hp: int(10000, 1), maxHp: int(10000, 1), weaponLevel: int(3, 1) }),
       fireInterval: { type: 'number', minimum: 0.07, maximum: 0.16 },
       damageBonus: { type: 'number', minimum: 0, maximum: 40 },

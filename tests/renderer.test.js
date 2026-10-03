@@ -106,6 +106,27 @@ test('missing atlases, unknown appearance indices and invalid chapters fail with
   assert.throws(() => renderer.draw(game, 0), /Unknown background chapter: 10; stage=0/);
 });
 
+test('defeat shows the ended run growth and pending verified revival without a free continue button', () => {
+  const { renderer, calls } = recordingRenderer();
+  const game = new Game();
+  game.start();
+  for (let remaining = game.launchDuration; remaining > 1e-8; remaining -= 0.1) game.update(Math.min(0.1, remaining));
+  game.addExperience(160);
+  game.player.invincible = 0;
+  game.player.hp = 1;
+  game.hurt();
+  renderer.draw(game, 0);
+  assert.ok(calls.images.some(call => call[0].name === 'player' && call[1] === frames.player[2].x && call[2] === frames.player[2].y), 'the death animation keeps the destroyed ship appearance');
+  for (let remaining = game.ejectionDuration; remaining > 1e-8; remaining -= 0.1) game.update(Math.min(0.1, remaining));
+  renderer.draw(game, 0);
+  assert.ok(calls.text.some(([value]) => value === '本局成长  ·  Lv.3 破晓'));
+  assert.ok(calls.text.some(([value]) => value === '本局获得 160 XP · 下局重新成长'));
+  assert.ok(calls.text.some(([value]) => value === '广告 / 充值复活待开放'));
+  assert.ok(calls.text.some(([value]) => value === '本局成长已重置 · 再次出击从第 1 关开始'));
+  assert.ok(renderer.getButtons(game).every(button => button.id !== 'continue'));
+  assert.equal(game.progression.level, 1);
+});
+
 test('segmented atlas regions retain common scale and exclude neighboring sprites', () => {
   const { renderer, calls, images, ctx } = recordingRenderer();
   const frame = { x: 10, y: 20, w: 100, h: 80,
