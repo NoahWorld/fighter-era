@@ -9,8 +9,8 @@ if (!/^\d+$/.test(portText) || Number(portText) < 1 || Number(portText) > 65535)
   throw new Error(`Invalid PORT: ${portText}. Expected an integer between 1 and 65535.`);
 }
 const port = Number(portText);
-const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const publicFiles = new Set(['index.html', 'style.css', 'src/browser.js', 'src/engine.js', 'src/renderer.js']);
+const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png' };
+const publicFiles = new Set(['index.html', 'style.css', 'src/browser.js', 'src/engine.js', 'src/renderer.js', 'src/assets.js', 'assets/player.png', 'assets/enemies.png', 'assets/warships.png', 'assets/projectiles.png', 'assets/expansion/enemy-variants.png', 'assets/expansion/fleet.png']);
 
 const server = http.createServer(async (req, res) => {
   const send = (code, message) => { res.writeHead(code, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end(req.method === 'HEAD' ? undefined : message); };

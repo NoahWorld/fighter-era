@@ -1,4 +1,7 @@
 {
   "deviceOrientation": "portrait",
-  "showStatusBar": false
+  "showStatusBar": false,
+  "subpackages": [
+    { "name": "fleet-assets", "root": "assets/expansion/" }
+  ]
 }
