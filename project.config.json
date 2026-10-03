@@ -1,0 +1,21 @@
+{
+  "description": "霓虹航线 NEON WING — 原生 Canvas 微信小游戏",
+  "projectname": "neon-wing",
+  "appid": "touristappid",
+  "compileType": "game",
+  "miniprogramRoot": "./",
+  "setting": {
+    "es6": true,
+    "minified": false,
+    "urlCheck": true
+  },
+  "packOptions": {
+    "ignore": [
+      { "type": "file", "value": "server.js" },
+      { "type": "file", "value": "index.html" },
+      { "type": "file", "value": "style.css" },
+      { "type": "file", "value": "src/browser.js" },
+      { "type": "folder", "value": "tests" }
+    ]
+  }
+}

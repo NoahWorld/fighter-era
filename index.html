@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070d19">
+  <meta name="description" content="霓虹航线 NEON WING：单指驾驶，穿越星港、碎星航道与核心防线。">
+  <title>霓虹航线 · NEON WING</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./src/engine.js" defer></script>
+  <script src="./src/renderer.js" defer></script>
+  <script src="./src/browser.js" defer></script>
+</head>
+<body>
+  <main class="flight-deck">
+    <aside class="briefing" aria-label="游戏说明">
+      <a class="brand" href="./" aria-label="霓虹航线首页"><span class="brand-mark" aria-hidden="true">↗</span><span>NEON WING<span class="brand-sub">独立飞行计划 / 001</span></span></a>
+      <div class="briefing-main">
+        <p class="eyebrow"><span></span> FLIGHT SYSTEM ONLINE</p>
+        <h1>穿越火线。<br><span>保持飞行。</span></h1>
+        <p class="intro">一架战机，三道防线。<br>在霓虹与星尘之间，开辟你的航线。</p>
+        <div class="controls-note"><span class="gesture-icon" aria-hidden="true">↔</span><div><strong>单指拖动 · 自动开火</strong><p>拖动任意位置驾驶，松手持续射击。</p><p class="desktop-control">方向键 / WASD 移动 · P 暂停</p></div></div>
+        <ol class="route-list" aria-label="飞行路线"><li><span>01</span><strong>星港外围</strong><i>OUTPOST</i></li><li><span>02</span><strong>碎星航道</strong><i>ASTEROID BELT</i></li><li><span>03</span><strong>核心防线</strong><i>THE CORE</i></li></ol>
+      </div>
+      <p class="briefing-footer">READY WHEN YOU ARE <span>✦</span></p>
+    </aside>
+    <section class="game-section" aria-label="霓虹航线游戏">
+      <div class="screen-caption"><span><i></i> LIVE FLIGHT</span><button id="sound-toggle" type="button" aria-pressed="false">音效 · 关</button></div>
+      <div class="game-shell" id="game-shell">
+        <canvas id="game-canvas" width="405" height="720" aria-label="游戏画面：拖动驾驶战机；也可使用方向键或 WASD。"></canvas>
+        <div id="game-buttons" class="game-buttons" aria-label="游戏操作"></div>
+      </div>
+      <p class="screen-footer"><span>霓虹航线</span><span>NEON WING / VOL. 01</span></p>
+    </section>
+  </main>
+  <div id="diagnostics" class="diagnostics" role="status" aria-live="polite" hidden></div>
+  <noscript><div class="diagnostics">游戏需要启用 JavaScript 才能运行。</div></noscript>
+</body>
+</html>

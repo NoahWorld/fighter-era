@@ -1,0 +1,44 @@
+:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #eaf5ff; background: #070d19; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; min-height: 100dvh; background: radial-gradient(ellipse at 69% 48%, #10233c 0%, #0a1424 32%, #070d19 67%); }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .18; background-image: linear-gradient(#35526a28 1px, transparent 1px), linear-gradient(90deg, #35526a28 1px, transparent 1px); background-size: 72px 72px; mask-image: linear-gradient(to right, transparent, #000); }
+button, a { -webkit-tap-highlight-color: transparent; }
+.flight-deck { position: relative; max-width: 1110px; min-height: 100vh; min-height: 100dvh; margin: auto; padding: 36px 56px; display: grid; grid-template-columns: minmax(300px, 1fr) auto; gap: 100px; align-items: center; }
+.briefing { align-self: stretch; display: flex; flex-direction: column; padding: 12px 0 7px; }
+.brand { color: #eaf5ff; text-decoration: none; display: flex; gap: 13px; align-items: center; font-size: 16px; letter-spacing: 3px; font-weight: 750; }
+.brand-mark { color: #8cf2ef; font-size: 32px; line-height: 35px; transform: rotate(-6deg); }
+.brand-sub { display: block; margin-top: 7px; color: #637a92; font-size: 9px; letter-spacing: 2px; font-weight: 400; }
+.briefing-main { margin: auto 0; padding: 56px 0; }
+.eyebrow { margin: 0 0 25px; color: #6f989f; letter-spacing: 2.4px; font-size: 9px; font-weight: 600; }
+.eyebrow span { display: inline-block; width: 5px; height: 5px; border-radius: 100%; background: #72d7c7; box-shadow: 0 0 12px #7efee480; margin-right: 9px; vertical-align: 1px; }
+h1 { font-size: clamp(35px, 3.2vw, 46px); line-height: 1.36; letter-spacing: 1px; margin: 0 0 22px; font-weight: 700; }
+h1 span { color: #7197b8; }
+.intro { color: #7990a8; font-size: 13px; line-height: 1.95; margin: 0; }
+.controls-note { display: flex; gap: 15px; padding: 24px 0; margin-top: 35px; border-top: 1px solid #223044; border-bottom: 1px solid #223044; }
+.gesture-icon { display: flex; width: 38px; height: 38px; flex-shrink: 0; align-items: center; justify-content: center; border: 1px solid #294458; border-radius: 10px; background: #132435; color: #a0dae8; font-size: 22px; }
+.controls-note strong { font-size: 12px; color: #c4d8e7; font-weight: 550; }
+.controls-note p { font-size: 10px; color: #6d849b; line-height: 1.6; margin: 6px 0 0; }
+.route-list { list-style: none; padding: 0; margin: 27px 0 0; }
+.route-list li { display: flex; align-items: center; gap: 16px; height: 34px; }
+.route-list span { color: #476178; font-size: 10px; font-variant-numeric: tabular-nums; }
+.route-list strong { font-size: 11px; font-weight: 400; color: #9aafc2; }
+.route-list i { color: #40596e; font-style: normal; font-size: 8px; letter-spacing: 1px; margin-left: auto; }
+.briefing-footer { color: #3e576d; font-size: 8px; letter-spacing: 2px; margin: 0; }
+.briefing-footer span { float: right; color: #678ea5; font-size: 14px; margin-top: -4px; }
+.game-section { width: min(405px, calc((100dvh - 114px) * 0.5625)); min-width: 270px; }
+.screen-caption { display: flex; align-items: center; justify-content: space-between; font-size: 8px; color: #65839d; letter-spacing: 1.8px; margin-bottom: 14px; }
+.screen-caption i { display: inline-block; width: 4px; height: 4px; border-radius: 50%; background: #81d0da; margin-right: 6px; vertical-align: 1px; }
+#sound-toggle { color: #819bb1; border: 0; padding: 4px 0 4px 12px; background: transparent; font: inherit; letter-spacing: 1px; cursor: pointer; }
+#sound-toggle:focus-visible, .brand:focus-visible { outline: 2px solid #8decea; outline-offset: 5px; }
+.game-shell { position: relative; width: 100%; aspect-ratio: 405 / 720; overflow: hidden; border-radius: 18px; background: #071120; box-shadow: 0 0 0 1px #33495a, 0 0 0 6px #111d2c, 0 30px 100px #0009, 0 0 100px #3298b010; touch-action: none; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; }
+.game-buttons { position: absolute; inset: 0; pointer-events: none; }
+.canvas-button { position: absolute; border: 0; background: transparent; color: transparent; padding: 0; margin: 0; font-size: 0; border-radius: 12px; cursor: pointer; pointer-events: auto; touch-action: manipulation; }
+.canvas-button:focus-visible { outline: 3px solid #fff; outline-offset: -4px; background: #a7ffff15; box-shadow: 0 0 20px #78f3ff90; }
+.screen-footer { display: flex; justify-content: space-between; font-size: 8px; color: #4c647c; margin: 17px 0 0; letter-spacing: 1.7px; }
+.diagnostics { position: fixed; z-index: 20; left: 16px; right: 16px; bottom: 12px; max-width: 720px; margin: auto; background: #322326f5; border: 1px solid #815452; padding: 10px 14px; border-radius: 9px; color: #ffe0cf; font-size: 12px; line-height: 1.6; }
+.diagnostics[hidden] { display: none; }
+@media (max-width: 1024px) and (min-width: 781px) { .flight-deck { gap: 40px; padding: 28px 30px; grid-template-columns: minmax(240px, 1fr) auto; } h1 { font-size: 34px; } .game-section { width: min(360px, calc((100dvh - 98px) * .5625)); } .briefing-main { padding: 35px 0; } }
+@media (max-width: 780px) { body { background: #060d19; overflow: hidden; } body::before, .briefing, .screen-caption, .screen-footer { display: none; } .flight-deck { display: flex; align-items: center; justify-content: center; padding: 0; min-height: 100dvh; width: 100vw; height: 100dvh; gap: 0; } .game-section { width: min(100vw, calc(100dvh * .5625)); min-width: 0; } .game-shell { border-radius: 0; box-shadow: none; } .diagnostics { font-size: 11px; bottom: max(8px, env(safe-area-inset-bottom)); } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+@media (max-width: 780px) { .screen-caption { display: block; position: fixed; z-index: 4; right: 9px; bottom: max(7px, env(safe-area-inset-bottom)); margin: 0; } .screen-caption > span { display: none; } #sound-toggle { padding: 7px 9px; border: 1px solid #37506166; border-radius: 20px; background: #071320cc; font-size: 9px; letter-spacing: 0; } }
