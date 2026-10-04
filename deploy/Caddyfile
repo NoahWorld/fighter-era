@@ -1,0 +1,23 @@
+{
+	auto_https disable_redirects
+	admin off
+}
+
+{$FIGHTER_DOMAIN}, www.{$FIGHTER_DOMAIN} {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	handle_path /api/* {
+		reverse_proxy api-https:4317
+	}
+	handle {
+		reverse_proxy web:4173
+	}
+}
+
+http://127.0.0.1:2015 {
+	respond /healthz "gateway alive" 200
+}

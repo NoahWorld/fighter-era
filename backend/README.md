@@ -2,7 +2,7 @@
 
 Node.js 22、Fastify 5 和 PostgreSQL 17。此目录独立于零依赖游戏客户端。真实登录只使用服务端向微信兑换的 `openid`，客户端不能指定账号。当前不获取头像、昵称；AppSecret 只放服务器配置，微信 `session_key` 不下发、不入库。自有登录令牌随机生成，数据库仅保存 SHA-256 摘要，有效期默认 30 天。
 
-微信客户端的 `src/cloud-config.js` 默认 `apiBase` 为空，使用本机存档。服务器尚未配置 AppSecret 与 HTTPS 网关；数据库就绪不代表真实微信登录已可用。充值和广告只预留数据结构，尚未启用；广告/充值复活尚无已验证奖励资格或可调用接口。
+微信客户端的 `src/cloud-config.js` 默认 `apiBase` 为空，使用本机存档。HTTPS 网关与证书的部署、验证记录见 [部署说明](../deploy/README.md)；服务器 AppSecret 仍待配置，微信合法请求域名、真实登录及跨设备存档尚未验证。数据库就绪或 HTTPS 可达都不代表真实微信登录已可用。充值和广告只预留数据结构，尚未启用；广告/充值复活尚无已验证奖励资格或可调用接口。
 
 ## 本地运行
 
@@ -26,13 +26,21 @@ npm test
 
 肉鸽版本于 2026-10-03 在服务器独立测试库通过 26 项测试（7 项单元、19 项真实 PostgreSQL，0 失败、0 跳过）。覆盖死亡清零、终局不可恢复、存活边界恢复和前向迁移保留身份、库存与历史成绩。测试库已清理，生产库没有测试用户；这不代表真实微信登录或支付验证通过。
 
+可信代理配置于 2026-10-04 通过本地语法检查，以及本地、服务器 `node --test backend/test/api.test.js backend/test/proxy.test.js` 的 13 项 API / 代理测试（0 失败、0 跳过）。代理测试验证直接模式和非网关连接不能用伪造转发头绕过限流、网关后的不同客户端各自计数、前置伪造地址不改变客户端身份、转发链中的网关地址不会增加可信跳数、IPv6 和 IPv4 映射 IPv6 网关地址，以及无转发头的健康检查。另已实测公网 HTTPS 与网关请求日志，结果见部署说明；此次未重新运行 PostgreSQL 集成测试。
+
 Docker 从仓库根目录构建：
 
 ```sh
 docker build -f backend/Dockerfile -t fighter-era-api .
 ```
 
-服务默认绑定 `127.0.0.1:4317`。生产容器内部通过 `HOST=0.0.0.0` 监听，宿主机仅发布 `127.0.0.1:8088`，后续由 HTTPS 网关接入；数据库不发布宿主机端口。独立部署位于 `/opt/fighter-era`，绝不修改既有 `/opt/learning-workbench` 及其应用、数据库或配置。步骤与验证范围见 [部署说明](../deploy/README.md)。
+服务默认绑定 `127.0.0.1:4317`。生产容器内部通过 `HOST=0.0.0.0` 监听，宿主机仅发布 `127.0.0.1:8088`；数据库不发布宿主机端口。战机专属 HTTPS 网关仅发布 443，不占用既有 80。独立部署位于 `/opt/fighter-era`，绝不修改既有 `/opt/learning-workbench` 及其应用、数据库或配置。步骤与验证范围见 [部署说明](../deploy/README.md)。
+
+`TRUST_PROXY_HOPS` 默认 `0`，只允许 `0` 或 `1`；直接模式忽略 `X-Forwarded-*`。设置为 `1` 时必须同时配置精确的 IPv4 / IPv6 `TRUST_PROXY_ADDRESS`，缺失或无效时启动失败，不接受主机名或 CIDR。Fastify 5.12.5 已禁用仅按跳数信任代理，因此实际信任函数同时验证立即连接者地址及 `hop === 0`；IPv4 映射 IPv6 与原 IPv4 地址按同一对端处理，不能把 `trustProxy` 设为 `true` 或省略对端验证。
+
+生产固定 `TRUST_PROXY_HOPS=1`、`TRUST_PROXY_ADDRESS=172.31.247.2`。网关和 API 使用专属内部网络 `https-api`（`172.31.247.0/29`），网关固定地址为 `172.31.247.2`，API 网络别名为 `api-https`；网关以 `api-https:4317` 为上游，同时通过原项目网络访问网页服务。Caddy 重写不可信来源的转发头，后端仅使用其最后一项客户端地址进行日志记录和每 IP 限流。原项目网络的数据库连接与宿主机回环 API 映射继续独立管理；修改网关固定地址时必须同步后端可信地址并重新验证。
+
+HTTPS 网关使用 `/api/*` 并剥离 `/api` 后转发，后端实际路由仍为 `/health/*` 与 `/v1/*`。例如公开 `/api/health/ready` 对应后端 `/health/ready`，未来微信公开配置可设为 `apiBase=https://resetshi.work/api`；目前仍保持空值。`/health/ready` 返回数据库 `ready`、微信 `pending_configuration` 时仅表示数据库就绪；AppSecret 未配置的真实登录必须继续返回 `503 WECHAT_NOT_CONFIGURED`。
 
 ## 接口
 

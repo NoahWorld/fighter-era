@@ -18,7 +18,7 @@ chmod 600 deploy/.env
 
 在 `deploy/.env` 中分别填写独立生成的数据库管理凭据与应用凭据；初始化脚本要求应用数据库凭据仅由十六进制字符组成。应用数据库角色 `fighter_app` 不是超级用户。小游戏 AppSecret 尚未准备时保持空，正式接入后只存服务器，不能进入公开仓库、客户端或日志。模板占位值不能直接用于正式部署；已有私有配置不能被更新覆盖。
 
-启动与检查：
+尚未启用 HTTPS 的初次启动与检查如下；已启用 HTTPS 的服务器更新须使用后文两个 Compose 配置文件：
 
 ```sh
 cd /opt/fighter-era/deploy
@@ -31,11 +31,37 @@ docker compose logs --tail 100 api
 
 使用 `config --quiet` 检查配置，不输出解析后的凭据。API 容器监听 4317，宿主机仅发布 `127.0.0.1:8088`；PostgreSQL 不发布宿主机端口。容器资源、健康检查和日志轮换由 `compose.yaml` 管理，数据库数据保存在独立卷中。
 
-启动先执行事务迁移并核验已应用迁移的摘要；迁移失败时服务停止，不能跳过或改写旧迁移制造就绪状态。升级数据库结构须新增迁移文件。肉鸽版本新增迁移 `002_roguelike_saves.sql`，清空旧永久经验和续关并停用旧存活对局编号，但保留账号、库存与历史成绩。更新前先备份，再同步审查后的项目文件及公开试玩目录并执行 `docker compose up -d --build`；保留 `deploy/.env` 与 `backups/`。
+启动先执行事务迁移并核验已应用迁移的摘要；迁移失败时服务停止，不能跳过或改写旧迁移制造就绪状态。升级数据库结构须新增迁移文件。肉鸽版本新增迁移 `002_roguelike_saves.sql`，清空旧永久经验和续关并停用旧存活对局编号，但保留账号、库存与历史成绩。更新前先备份，再同步审查后的项目文件及公开试玩目录；未启用 HTTPS 时使用基础 Compose 配置，已启用时按后文双配置命令更新。始终保留 `deploy/.env` 与 `backups/`。
 
 浏览器试玩由独立 `web` 容器提供，目录为 `/opt/fighter-era/playtest`，只复制 `server.js`、`index.html`、`style.css`、`src/browser.js`、`src/engine.js`、`src/renderer.js`、`src/assets.js` 与六张图集，按原路径组织。静态服务仅允许公开资源；私有配置、后端源码和 Git 数据不可访问。默认公开端口 8080，可在私有配置中设置 `PLAYTEST_PORT`。云安全组需放行此 TCP 端口；已有 80 端口应用不变。启动前必须先创建并填充试玩目录，不能让空目录伪装健康。
 
-浏览器试玩当前使用 HTTP 和本机存档，可用于朋友测试；真实微信登录和跨设备账号存档仍需要 AppSecret 与 HTTPS 接入。当前没有公网 HTTPS 网关。`/health/ready` 报告数据库 `ready`、微信 `pending_configuration`，以及支付和广告 `not_enabled`，只代表数据库服务可用。真实登录还需服务器 AppSecret、HTTPS 地址、微信 request 合法域名和客户端公开 `apiBase`。网关接入不得未经任务授权修改已有应用的配置。
+浏览器试玩使用本机存档，可用于朋友测试；真实微信登录和跨设备账号存档仍需要 AppSecret、微信 request 合法域名和客户端公开 `apiBase`。`/health/ready` 报告数据库 `ready`、微信 `pending_configuration`，以及支付和广告 `not_enabled`，只代表数据库服务可用。
+
+## 域名与 HTTPS
+
+域名 `resetshi.work` 与 `www.resetshi.work` 的 A 记录均指向 `47.116.38.160`，TTL 为 600 秒。HTTPS 网关是战机时代独立的 Caddy 容器，配置为 `Caddyfile` 和显式启用的 `compose.https.yaml`，只发布 TCP 443。游戏地址为 `https://resetshi.work/`，`www` 也提供同一游戏；公网 API 地址为 `https://resetshi.work/api`。`handle_path /api/*` 剥离 `/api` 后代理到 `api-https:4317`，其它路径代理到 `web:4173`，因此就绪地址为 `/api/health/ready`。
+
+在私有 `deploy/.env` 配置 `FIGHTER_DOMAIN=resetshi.work` 和 `CADDY_IMAGE`。服务器使用经验证的 Caddy 2.11.6 镜像并固定镜像摘要；模板默认使用官方 `caddy:2-alpine`。启用前确认 DNS 已生效、443 空闲且云防火墙允许 TCP 443。检查 Docker 网络与云内网地址没有和专属 `172.31.247.0/29` 网络冲突。
+
+网关同时接入默认网络与内部 `https-api` 网络，后者固定网关地址为 `172.31.247.2`；API 保留默认网络用于数据库，并在专属网络使用别名 `api-https`。HTTPS 覆盖配置设置 `TRUST_PROXY_HOPS=1` 与 `TRUST_PROXY_ADDRESS=172.31.247.2`，后端只信任此直接对端传来的单跳客户端地址，用于访问日志和每 IP 限流；非网关连接与额外前置地址不能伪造身份。不能仅凭跳数或任意转发头信任请求。
+
+证书通过 Let's Encrypt 的 TLS-ALPN-01 在 443 上验证并自动续期。关闭 HTTP challenge 和自动 HTTP 跳转，网关不监听宿主机 80，既有应用继续使用原来的 80 端口；普通 `http://resetshi.work/` 不会自动跳转到游戏 HTTPS。证书和 ACME 账户仅存独立持久卷 `fighter-era_fighter-era-tls-data`，配置状态位于独立 `fighter-era_fighter-era-tls-config` 卷，不进入公开仓库。不要删除这些卷，否则会丢失证书与续期状态。
+
+首次启用或后续更新使用两个配置文件，不能仅用基础配置重建 API 丢失可信代理设置。先备份，再更新。首次启用、网关尚未运行时，可用 `docker compose -f compose.yaml -f compose.https.yaml run --rm --no-deps gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` 验证配置，然后启动 API 与网关。后续更新在已有网关内验证，避免临时容器争用固定地址：
+
+```sh
+cd /opt/fighter-era/deploy
+docker compose -f compose.yaml -f compose.https.yaml config --quiet
+docker compose -f compose.yaml -f compose.https.yaml exec -T gateway caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+docker compose -f compose.yaml -f compose.https.yaml up -d --build --no-deps api gateway
+docker compose -f compose.yaml -f compose.https.yaml ps
+docker compose -f compose.yaml -f compose.https.yaml logs --tail 100 gateway
+curl --fail --show-error --silent https://resetshi.work/api/health/ready
+```
+
+仅启动或重建战机的 API 与 gateway，保留正在运行的 web、db 与既有应用。Caddy 管理接口关闭，修改配置后重新创建或重启此网关。健康检查 `/healthz` 只在网关容器的 `127.0.0.1:2015` 监听；它表示网关已运行，证书和上游仍须另外通过公网 HTTPS 验证。HTTPS 使用标准端口，无需在游戏链接中加 `:8080`；原 HTTP 8080 试玩入口继续保留。
+
+微信客户端 `apiBase` 当前仍为空。准备 AppSecret 后，可设置 `https://resetshi.work/api`，在微信平台登记合法请求域名并完成真实登录和真机测试。仅部署 HTTPS 不会自动启用微信登录、广告或支付。浏览器从 HTTP 8080 切到 HTTPS 属于不同来源，原地址的本机存档不会自动迁移。
 
 ## 备份
 
@@ -80,6 +106,15 @@ docker compose exec -T db psql -U postgres -d fighter_era_restore_test -v ON_ERR
 
 ## 当前验证范围
 
+域名与 HTTPS 于 2026-10-04 完成以下检查：
+
+- 阿里云 A 记录 `@` 与 `www` 均为 `47.116.38.160`，TTL 600；Google 与 Cloudflare 公共解析返回相同结果。
+- 主域名和 `www` HTTPS 首页均返回 200，客户端严格验证证书通过。Let's Encrypt 已签发证书，主域名证书有效期至 2027-01-02 05:49:16 UTC；自动续期已配置，后续实际续期仍待观察。
+- 实际浏览器通过 `https://resetshi.work/` 打开机库、出击并进入战斗，检查时控制台无警告或错误。12 项公开资源通过 HTTPS 返回 200 且与本地发布内容一致，5 项私有路径返回 404。
+- 公网 `/api/health/ready` 返回 200、数据库 `ready`、微信 `pending_configuration`；未配置登录返回 `503 WECHAT_NOT_CONFIGURED`，无身份读取账号返回 401。伪造转发头的公网探针与对应请求日志确认后端识别真实客户端地址。
+- 本地语法检查与本地、服务器 13 项 API / 代理测试均通过，0 失败、0 跳过；已运行网关的配置验证通过，独立 `gateway`、`api`、`web`、`db` 健康。此次未重复客户端全量测试、PostgreSQL 集成测试或备份恢复演练。
+- 部署前完成独立数据库备份 `fighter-era-20261004T064319Z.dump`。既有 `/opt/learning-workbench` 四个关键文件 SHA-256 与基线一致，原容器身份与 HTTP 200 保持正常；私有 `deploy/.env` 权限仍为 600。
+
 肉鸽版本于 2026-10-03 完成以下检查：
 
 - `web`、`api`、`db` 容器健康；数据库已应用 `001_initial.sql` 与 `002_roguelike_saves.sql`。API 就绪 HTTP 200，微信仍为 `pending_configuration`，支付和广告仍为 `not_enabled`。
@@ -96,6 +131,6 @@ docker compose exec -T db psql -U postgres -d fighter_era_restore_test -v ON_ERR
 - 每日 03:20 备份计时器已启用；首次备份为 24,530 字节，恢复到独立数据库成功并核对 13 张表。测试和恢复数据库已清理，生产库没有保留测试用户。
 - 既有 `/opt/learning-workbench` 四个关键文件的 SHA-256 与部署前基线一致；原应用跟随重定向后返回 HTTP 200。
 
-真实微信登录、HTTPS 域名请求、跨设备续关、支付、广告和真机兼容尚未验证。后续版本重新执行检查，并更新实际结果；不能把当前数据库测试范围扩展成上述能力已开通。
+真实微信登录、微信真机 HTTPS 请求、跨设备续关、支付、广告和真机兼容尚未验证。后续版本重新执行检查，并更新实际结果；不能把当前数据库测试范围扩展成上述能力已开通。
 
 后端接口与测试运行方法见 [后端说明](../backend/README.md)，客户端存档行为见 [项目说明](../README.md)。

@@ -5,9 +5,13 @@ import { createStore } from './store.js';
 import { createWechatClient } from './wechat.js';
 import { ApiError } from './errors.js';
 import { loginBody, saveBody, importBody, consumeBody } from './schemas.js';
+import { normalizeIpAddress } from './config.js';
 
 export async function buildApp({ config, pool, store = createStore(pool, config), wechat = createWechatClient(config), logger = true }) {
   const app = Fastify({
+    trustProxy: config.trustProxyHops === 1
+      ? (address, hop) => hop === 0 && normalizeIpAddress(address) === config.trustProxyAddress
+      : false,
     bodyLimit: 65536,
     requestTimeout: 15000,
     connectionTimeout: 10000,

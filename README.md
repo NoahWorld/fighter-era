@@ -4,7 +4,7 @@
 
 原生 Canvas 竖屏自动射击小游戏。采用肉鸽规则：击破敌机获得本局经验、升级战机，死亡结束远征，下次从第 1 关、Lv.1 重来。浏览器与微信小游戏共享一套引擎和画面，使用用户提供的本地透明图集；客户端无第三方运行依赖或远程图片、字体请求。独立账号后端采用 Node.js 22 + Fastify 5 + PostgreSQL 17，保存成长、通关与道具记录。
 
-微信云存档接入代码已加入，但默认 `apiBase` 为空，AppSecret 与 HTTPS 域名尚待配置。当前默认仍仅本机保存；充值和广告只预留数据结构，没有启用。
+微信云存档接入代码已加入，但默认 `apiBase` 为空，AppSecret 与微信 request 合法域名尚待配置。浏览器 HTTPS 试玩入口为 [resetshi.work](https://resetshi.work/)，独立 API 地址为 `https://resetshi.work/api`。当前默认仍仅本机保存；充值和广告只预留数据结构，没有启用。
 
 ## 浏览器试玩
 
@@ -71,8 +71,8 @@ npm start
 启用真实微信登录需要：
 
 1. 将小游戏 AppSecret 配置在服务器 `deploy/.env`，不提交到公开仓库。
-2. 为独立 API 配置 HTTPS 网关，并在微信平台登记 request 合法域名。
-3. 将 `src/cloud-config.js` 中公开的 `apiBase` 设置为该 HTTPS 地址，再进行开发者工具与真机验证。
+2. 在微信平台登记 HTTPS API 的 request 合法域名；服务器已配置 `resetshi.work` HTTPS 网关。
+3. 将 `src/cloud-config.js` 中公开的 `apiBase` 设置为 `https://resetshi.work/api`，再进行开发者工具与真机验证。
 
 配置保持空时，微信显示「云存档待配置 · 当前仅本机保存」，不调用登录接口。后端未配置 AppSecret 时返回 `503 WECHAT_NOT_CONFIGURED`，不会建立假账号。API 契约见 [后端说明](backend/README.md)。
 
@@ -86,7 +86,7 @@ npm --prefix backend run check
 npm --prefix backend test
 ```
 
-运行服务还需要 PostgreSQL 数据库与私有配置，步骤见 [后端说明](backend/README.md)。默认本地 API 为 `127.0.0.1:4317`；生产 Compose 使用 Node.js 22 与 PostgreSQL 17，专用目录为 `/opt/fighter-era`，仅向宿主机发布 `127.0.0.1:8088`，数据库不发布公网端口。HTTPS 网关尚待接入。
+运行服务还需要 PostgreSQL 数据库与私有配置，步骤见 [后端说明](backend/README.md)。默认本地 API 为 `127.0.0.1:4317`；生产 Compose 使用 Node.js 22 与 PostgreSQL 17，专用目录为 `/opt/fighter-era`，API 仅向宿主机发布 `127.0.0.1:8088`，数据库不发布公网端口。独立 Caddy 网关使用 TCP 443，提供游戏和 `/api/*` 后端接口，证书自动续期，不占用原应用的 80 端口。
 
 **既有 `/opt/learning-workbench` 及其服务、数据库、配置不得修改。** 战机时代使用独立 Compose 项目、卷与数据库凭据。部署、健康检查、更新与备份操作见 [部署说明](deploy/README.md)。独立浏览器试玩目录为 `/opt/fighter-era/playtest`，默认公开端口 8080，云安全组需放行 TCP 8080；浏览器版本当前仅本机存档。备份写入 `/opt/fighter-era/backups`，不进入 Git；备份文件和真正验证过的恢复要分开记录。
 
@@ -112,7 +112,9 @@ npm test
 
 肉鸽版本于 2026-10-03 通过客户端 143 项自动测试与语法检查，服务器后端 26 项测试（7 项单元、19 项真实 PostgreSQL），均 0 失败、0 跳过。实际浏览器验证死亡清零且刷新不能续关，存活回机库后刷新可继续第 1 关；检查时控制台无警告或错误。独立服务器已运行新版 web/API/数据库；[公网试玩入口](http://47.116.38.160:8080/) 已打开并实测出击，12 项公开资源与本地发布内容一致。浏览器试玩为本机存档，微信云存档仍待配置。
 
-后端单独运行语法与 API 测试；真实 PostgreSQL 集成测试必须提供 `TEST_DATABASE_URL`，且测试数据库名称以 `_test` 结尾。未设置时会明确跳过数据库测试，不能把跳过描述为数据库验证通过。此前备份已恢复到独立数据库并核对 13 张表，部署详情见 [部署说明](deploy/README.md)。真实微信登录、HTTPS 域名请求、跨设备恢复、支付、广告与真机续关尚未验证。
+2026-10-04 已绑定主域名及 `www` 并部署独立 HTTPS 网关；[HTTPS 试玩入口](https://resetshi.work/) 已在实际浏览器打开并出击，主域名与 `www` 严格证书验证通过，12 项公开资源与发布内容一致。后端新增代理配置在本地和服务器通过 13 项测试，0 失败、0 跳过；公网数据库就绪，微信仍待配置。既有应用保持正常，具体证书、接口与部署验证见 [部署说明](deploy/README.md)。
+
+后端单独运行语法与 API 测试；真实 PostgreSQL 集成测试必须提供 `TEST_DATABASE_URL`，且测试数据库名称以 `_test` 结尾。未设置时会明确跳过数据库测试，不能把跳过描述为数据库验证通过。此前备份已恢复到独立数据库并核对 13 张表，部署详情见 [部署说明](deploy/README.md)。真实微信登录、微信真机 HTTPS 请求、跨设备恢复、支付、广告与真机续关尚未验证。
 
 新增续关已在浏览器实测「开局 → 暂停 → 回机库 → 刷新」，菜单仍显示「继续第 1 关」，控制台无警告或错误；这只验证本机存档，不代表微信账号或跨设备恢复通过。
 

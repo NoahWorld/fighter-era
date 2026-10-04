@@ -1,0 +1,46 @@
+# Explicit opt-in: docker compose -f compose.yaml -f compose.https.yaml ...
+services:
+  api:
+    environment:
+      TRUST_PROXY_HOPS: '1'
+      TRUST_PROXY_ADDRESS: 172.31.247.2
+    networks:
+      default:
+      https-api:
+        aliases: [api-https]
+  gateway:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    environment:
+      FIGHTER_DOMAIN: ${FIGHTER_DOMAIN:?Set FIGHTER_DOMAIN to the domain pointing at this server}
+      GOMEMLIMIT: 96MiB
+    ports: ['443:443/tcp']
+    networks:
+      default:
+      https-api:
+        ipv4_address: 172.31.247.2
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - fighter-era-tls-data:/data
+      - fighter-era-tls-config:/config
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:2015/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    read_only: true
+    tmpfs: ['/tmp:size=16m,mode=1777']
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+volumes:
+  fighter-era-tls-data:
+  fighter-era-tls-config:
+networks:
+  https-api:
+    internal: true
+    ipam:
+      config: [{subnet: 172.31.247.0/29}]
