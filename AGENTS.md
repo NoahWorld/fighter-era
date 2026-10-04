@@ -51,6 +51,7 @@
 
 - 服务专用目录为 `/opt/fighter-era`，Compose 配置位于 `/opt/fighter-era/deploy`，项目名 `fighter-era`。**绝不修改 `/opt/learning-workbench` 或其应用、数据库、配置与运行服务**；所有部署和备份操作仅针对战机时代自己的 Compose 项目、卷与目录。
 - 公网浏览器试玩由独立 `web` 容器提供，HTTP 端口默认为 8080，静态目录 `/opt/fighter-era/playtest` 只放工具首页和游戏公开资源。域名 `resetshi.work` 与 `www.resetshi.work` 的 A 记录指向 `47.116.38.160`。独立 Caddy 网关以 `deploy/compose.https.yaml` 显式启用，仅发布 TCP 443；首页工具地址为 `https://resetshi.work/`，游戏地址为 `https://resetshi.work/game`，`/api/*` 剥离前缀后转发 `api-https:4317`，其它路径转发 `web:4173`。TLS-ALPN-01 验证与自动续期使用 443，禁用 HTTP challenge 和自动跳转，不监听已有应用的 80。证书与 ACME 账户使用专属持久卷，不能提交或删除。只更新首页/静态路由时同步两个 HTML 与 server.js，仅重启 web，不重建 API、数据库或网关。
+- 2026-10-04 为备案准备，按用户要求在阿里云暂停 `resetshi.work` 的 `@` 与 `www` 两条 A 记录；控制台均显示「暂停」，更新时间为 15:22:37（UTC+8），原值与 TTL 600 秒保留。仅暂停 DNS，服务和 HTTPS 配置未停用。备案期间不得把域名无法解析当作部署故障而自行恢复，须由用户另行要求后启用。
 - HTTPS 覆盖配置将 API 与网关接入专属内部网络 `172.31.247.0/29`，网关固定 `172.31.247.2`。后端启用 `TRUST_PROXY_HOPS=1` 必须同时配置此精确 `TRUST_PROXY_ADDRESS`，只信任直接网关的单跳转发地址；默认 0 不信任代理，非法或缺失配置须启动失败。新增网络前核对冲突；HTTPS 已启用时更新 API 要同时指定两个 Compose 配置文件，不能丢失网络和可信代理约定。
 - 浏览器试玩仅同一来源本机存档，没有微信账号登录；HTTP 8080 与 HTTPS 的存档不自动迁移。API 宿主映射仍仅 `127.0.0.1:8088`；PostgreSQL 17 不发布宿主机端口。配置放 `deploy/.env` 并限制为 600；数据库用独立随机凭据，应用数据库角色不是超级用户。AppSecret、微信 request 合法域名和客户端 `apiBase` 仍待配置；HTTPS 可用不代表微信登录、广告或支付已开通。不要提交 `.env`、密钥、日志或备份。
 - 运行、健康检查、更新、备份与独立恢复演练按 [部署说明](deploy/README.md)。`deploy/backup.sh` 用 `pg_dump --format=custom` 写 `/opt/fighter-era/backups`，只在成功且非空后把 `.partial` 改为正式备份。每日计时器由服务器 systemd 管理，备份失败必须可查日志。已有备份文件不等于验证过恢复或异机容灾；新验证结果应明确记录其范围。

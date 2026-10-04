@@ -39,6 +39,8 @@ docker compose logs --tail 100 api
 
 ## 域名与 HTTPS
 
+当前状态（2026-10-04）：为备案准备，按用户要求暂停主域名 `@` 与 `www` 两条 A 记录。阿里云控制台均显示「暂停」，更新时间为 15:22:37（UTC+8）；保留原记录值与 TTL 600 秒。服务和 HTTPS 配置未停用，恢复解析须由用户另行要求，不能在部署或健康检查中自动启用。
+
 域名 `resetshi.work` 与 `www.resetshi.work` 的 A 记录均指向 `47.116.38.160`，TTL 为 600 秒。HTTPS 网关是战机时代独立的 Caddy 容器，配置为 `Caddyfile` 和显式启用的 `compose.https.yaml`，只发布 TCP 443。首页工具地址为 `https://resetshi.work/`，游戏地址为 `https://resetshi.work/game`；`www` 提供相同路径和内容，公网 API 地址为 `https://resetshi.work/api`。`handle_path /api/*` 剥离 `/api` 后代理到 `api-https:4317`，其它路径代理到 `web:4173`，因此就绪地址为 `/api/health/ready`。
 
 在私有 `deploy/.env` 配置 `FIGHTER_DOMAIN=resetshi.work` 和 `CADDY_IMAGE`。服务器使用经验证的 Caddy 2.11.6 镜像并固定镜像摘要；模板默认使用官方 `caddy:2-alpine`。启用前确认 DNS 已生效、443 空闲且云防火墙允许 TCP 443。检查 Docker 网络与云内网地址没有和专属 `172.31.247.0/29` 网络冲突。
