@@ -43,7 +43,7 @@ test('acquisition persists one immutable loadout boundary atomically and continu
   const game = playing();
   game.callSupport();
   game.useBomb();
-  game.addExperience(1980);
+  game.addExperience(9900);
   game.captureCheckpoint();
   const initial = game.savedCheckpoint;
   const events = [];
@@ -117,6 +117,37 @@ test('a recovered interrupted stage starts its waves again using saved stage-bou
   assert.equal(recovered.nextWave, 1.2);
 });
 
+test('continuation retains the next reinforcement boundary and cannot reset increasing drop gaps', () => {
+  const game = playing();
+  // A stage-boundary fixture immediately before the first published drop.
+  game.kills = 11;
+  game.captureCheckpoint();
+  const resumed = new Game({ profile: game.getProfile(), checkpoint: game.getCheckpoint() });
+  resumed.continueRun();
+  advance(resumed, resumed.launchDuration);
+  const defeatScout = current => {
+    current.wave = 0;
+    current.spawnWave();
+    const scout = current.enemies.find(enemy => enemy.type === 'scout');
+    assert.ok(scout, 'the ordinary wave must generate a scout');
+    current.enemies = [scout];
+    current.destroyEnemy(scout);
+    current.enemies = [];
+  };
+  defeatScout(resumed);
+  assert.equal(resumed.kills, 12);
+  assert.deepEqual(resumed.pickups.map(pickup => pickup.weapon), ['laser']);
+  resumed.captureCheckpoint();
+  const again = new Game({ profile: resumed.getProfile(), checkpoint: resumed.getCheckpoint() });
+  again.continueRun();
+  advance(again, again.launchDuration);
+  for (let kills = 13; kills <= 25; kills++) defeatScout(again);
+  assert.equal(again.pickups.length, 0, 'resuming at twelve kills must not repeat the first reward or shorten the next gap');
+  defeatScout(again);
+  assert.equal(again.kills, 26);
+  assert.deepEqual(again.pickups.map(pickup => pickup.weapon), ['homing']);
+});
+
 test('spent free abilities stay spent after surviving reload while death removes continuation', () => {
   const events = [];
   const game = playing({ onEvent: (name, payload) => { if (name === 'checkpoint') events.push(payload.checkpoint); } });
@@ -159,7 +190,7 @@ test('a boss-complete checkpoint resumes upgrade selection without awarding the 
   assert.deepEqual(recovered.enemies, []);
   recovered.chooseUpgrade('rapid');
   assert.equal(recovered.stage, 1);
-  assert.equal(recovered.fireInterval, 0.16 * 0.8);
+  assert.equal(recovered.fireInterval, 0.16 * 0.92);
   assert.equal(recovered.getCheckpoint().phase, 'stage');
   assert.equal(recovered.getCheckpoint().fireInterval, recovered.fireInterval);
 });
@@ -266,7 +297,7 @@ test('fatal damage atomically removes all run growth before any persistence even
   game = playing({ onEvent: (name, payload) => {
     if (['progression', 'checkpoint', 'state'].includes(name)) persisted.push({ name, payload, profile: game ? game.getProfile() : null, checkpoint: game ? game.getCheckpoint() : null, bestScore: game ? game.bestScore : null });
   } });
-  game.addExperience(700);
+  game.addExperience(3500);
   defeatBoss(game);
   game.chooseUpgrade('repair');
   const oldCheckpoint = game.getCheckpoint();
@@ -281,7 +312,7 @@ test('fatal damage atomically removes all run growth before any persistence even
   assert.equal(game.getCheckpoint(), null);
   assert.deepEqual(game.getProfile(), { version: 2, totalXp: 0 });
   assert.equal(game.progression.level, 1);
-  assert.equal(game.resultProgression.totalXp, 820);
+  assert.equal(game.resultProgression.totalXp, 3620);
   assert.equal(game.player.maxHp, 5);
   assert.equal(game.player.shipLevel, 1);
   assert.equal(game.player.weaponLevel, 1);

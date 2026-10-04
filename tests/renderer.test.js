@@ -115,7 +115,9 @@ test('defeat shows the ended run growth and pending verified revival without a f
   const game = new Game();
   game.start();
   for (let remaining = game.launchDuration; remaining > 1e-8; remaining -= 0.1) game.update(Math.min(0.1, remaining));
-  game.addExperience(160);
+  game.addExperience(game.progression.nextXp);
+  game.addExperience(game.progression.nextXp);
+  const earnedExperience = game.progression.totalXp;
   game.player.invincible = 0;
   game.player.hp = 1;
   game.hurt();
@@ -124,7 +126,7 @@ test('defeat shows the ended run growth and pending verified revival without a f
   for (let remaining = game.ejectionDuration; remaining > 1e-8; remaining -= 0.1) game.update(Math.min(0.1, remaining));
   renderer.draw(game, 0);
   assert.ok(calls.text.some(([value]) => value === '本局成长  ·  Lv.3 破晓'));
-  assert.ok(calls.text.some(([value]) => value === '本局获得 160 XP · 下局重新成长'));
+  assert.ok(calls.text.some(([value]) => value === '本局获得 ' + earnedExperience + ' XP · 下局重新成长'));
   assert.ok(calls.text.some(([value]) => value === '广告 / 充值复活待开放'));
   assert.ok(calls.text.some(([value]) => value === '本局成长已重置 · 再次出击从第 1 关开始'));
   assert.ok(renderer.getButtons(game).every(button => button.id !== 'continue'));
@@ -217,20 +219,48 @@ test('battle, launch, ejection, and archive all draw the same level-20 silhouett
   assert.equal(drawn.filter(descriptor => descriptor === appearance).length, 6);
 });
 
-test('MAX experience and stacked weapon HUD show mounted ranks and reserves with finite bars', () => {
+test('battle rail keeps only Chinese level and health labels, with bounded progress and health bars', () => {
   const { renderer, calls } = recordingRenderer();
   const game = new Game();
   game.addExperience(1000000);
   renderer.menu(game, 0);
   assert.ok(calls.text.some(([value]) => value === 'MAX · 已满级'));
+  calls.text.length = 0;
   renderer.hud(game);
-  assert.ok(calls.text.some(([value]) => value === 'MAX'));
+  assert.ok(calls.text.some(([value]) => value === '满级'));
   assert.ok(calls.geometry.flatMap(call => call.slice(1)).every(Number.isFinite));
-  const earlyGame = new Game(); earlyGame.addExperience(60); // Level 2 has two mounting positions.
+  const earlyGame = new Game(); earlyGame.addExperience(earlyGame.progression.nextXp);
   earlyGame.player.weapons = Object.freeze({ gun: 3, laser: 2, homing: 4, explosive: 1 });
+  const boxes = [];
+  renderer.box = (...args) => boxes.push(args);
   calls.text.length = 0; renderer.hud(earlyGame);
-  for (const label of ['挂载 2/2', '机炮3', '光柱2', '追踪4储', '爆炸1储']) {
-    assert.ok(calls.text.some(([value]) => value === label), 'HUD displays ' + label);
-  }
+  assert.deepEqual(calls.text.filter(([, x]) => x === 22).map(([value]) => value),
+    ['等级', '2', '生命', earlyGame.player.hp + '/' + earlyGame.player.maxHp]);
+  const fullHealthBar = boxes.find(([x, y, width, height, color]) => width === 8 && height === 50 && color === '#99cce2');
+  assert.ok(fullHealthBar, 'a single health bar fits a constant 50-pixel rail');
+  earlyGame.player.maxHp = 100; earlyGame.player.hp = 25;
+  boxes.length = 0; calls.text.length = 0; renderer.hud(earlyGame);
+  const lowHealthBar = boxes.find(([x, y, width, height, color]) => color === '#ee9b82');
+  assert.equal(lowHealthBar[3], fullHealthBar[3] / 4, 'health is proportional even when the maximum increases');
+  assert.equal(lowHealthBar[1] + lowHealthBar[3], fullHealthBar[1] + fullHealthBar[3], 'health depletes towards the same bottom edge');
+  assert.ok(calls.text.filter(([, x]) => x === 22).every(([, , y]) => y < 225), 'the left rail no longer extends into the central battlefield');
+  earlyGame.player.maxHp = 0;
+  assert.throws(() => renderer.hud(earlyGame), /Invalid HUD health: hp=25; maxHp=0/);
   assert.throws(() => renderer.experienceRatio({ level: 2, xp: 10, nextXp: 0 }), /Invalid experience bar/);
+});
+
+test('pausing reveals clear acquired weapon names and reserves without changing combat controls or state', () => {
+  const { renderer, calls } = recordingRenderer();
+  const game = new Game(); game.addExperience(game.progression.nextXp);
+  game.player.weapons = Object.freeze({ gun: 3, laser: 2, homing: 4, explosive: 1 });
+  game.state = 'paused'; game.pausedFrom = 'playing';
+  const before = JSON.stringify(game);
+  renderer.overlay(game);
+  for (const label of ['当前武器', '机炮 3级', '光柱 2级', '追踪弹 4级 · 待挂载', '爆炸弹 1级 · 待挂载']) {
+    assert.ok(calls.text.some(([value]) => value === label), 'pause displays ' + label);
+  }
+  assert.deepEqual(renderer.getButtons(game).map(button => button.id), ['resume', 'home']);
+  assert.equal(JSON.stringify(game), before);
+  game.player.weapons = Object.freeze({ ...game.player.weapons, homing: 6 });
+  assert.throws(() => renderer.overlay(game), /Invalid paused weapon rank: homing=6/);
 });

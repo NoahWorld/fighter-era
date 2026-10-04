@@ -77,7 +77,7 @@ function aliveRecord(totalXp) {
 function launch(game) { for (let i = 0; i < 16; i++) game.update(.2); }
 
 test('browser hangar browses all three catalogs without changing a living run or enabling selection', async () => {
-  const app = await browser(new Map([[RUN_KEY, aliveRecord(165)]]));
+  const app = await browser(new Map([[RUN_KEY, aliveRecord(805)]]));
   const checkpoint = app.game.getCheckpoint();
   const saved = app.storage.get(RUN_KEY);
   app.press('hangar');
@@ -127,7 +127,7 @@ test('browser entry ignores legacy permanent growth and retains only historical 
 });
 
 test('browser death saves a zero-growth tombstone before ejection and reload cannot continue', async () => {
-  const storage = new Map([[RUN_KEY, aliveRecord(165)], ['neon-wing.best-score', '2100']]);
+  const storage = new Map([[RUN_KEY, aliveRecord(805)], ['neon-wing.best-score', '2100']]);
   const app = await browser(storage);
   assert.equal(app.game.progression.level, 3);
   assert.equal(app.game.continueRun(), true); launch(app.game);
@@ -142,7 +142,7 @@ test('browser death saves a zero-growth tombstone before ejection and reload can
 });
 
 test('browser victory clears the run before immediate restart and preserves historical score', async () => {
-  const storage = new Map([[RUN_KEY, aliveRecord(165)]]);
+  const storage = new Map([[RUN_KEY, aliveRecord(805)]]);
   const app = await browser(storage);
   app.game.continueRun(); launch(app.game);
   app.game.score = 875; app.game.finish('victory');

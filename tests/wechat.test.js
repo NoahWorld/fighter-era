@@ -454,22 +454,22 @@ test('WeChat API simulation: legacy permanent growth is ignored while the histor
 });
 
 test('WeChat API simulation: alive checkpoints restore boundary growth and starting a new expedition resets it', async () => {
-  const storage = new Map([[RUN_KEY, aliveRecord(165)], ['neon-wing.best-score', 200]]);
+  const storage = new Map([[RUN_KEY, aliveRecord(805)], ['neon-wing.best-score', 200]]);
   const app = await simulateWechatApi({ storage });
   assert.equal(app.game.progression.level, 3);
-  assert.equal(app.game.getProfile().totalXp, 165);
+  assert.equal(app.game.getProfile().totalXp, 805);
   app.press('continue');
   finishLaunch(app.game);
   app.release();
   app.game.addExperience(10);
-  assert.equal(storage.get(RUN_KEY).profile.totalXp, 175, 'progress is durably written without waiting for a frame');
-  assert.equal(storage.get(RUN_KEY).checkpoint.totalXp, 165, 'interrupted waves resume their original boundary experience');
+  assert.equal(storage.get(RUN_KEY).profile.totalXp, 815, 'progress is durably written without waiting for a frame');
+  assert.equal(storage.get(RUN_KEY).checkpoint.totalXp, 805, 'interrupted waves resume their original boundary experience');
   app.game.pause();
   app.press('home');
   app.release();
   const reloaded = await simulateWechatApi({ storage });
   assert.equal(reloaded.game.progression.level, 3);
-  assert.equal(reloaded.game.getProfile().totalXp, 165);
+  assert.equal(reloaded.game.getProfile().totalXp, 805);
   assert.ok(reloaded.game.getCheckpoint());
   reloaded.press('start');
   reloaded.release();

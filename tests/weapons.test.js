@@ -24,7 +24,7 @@ function silence(game) {
   game.specialFireTimers = { laser: 10000, homing: 10000, explosive: 10000 };
 }
 function equip(game, kind, rank = 1) {
-  game.addExperience(1980);
+  game.addExperience(9900);
   game.player.weapons = Object.freeze({ ...game.player.weapons, [kind]: rank });
   game.player.weapon = kind;
 }
@@ -57,11 +57,11 @@ test('pickups acquire and reinforce a stacked loadout, with reserved weapons ena
   collect(game, 'explosive');
   assert.deepEqual(game.getActiveWeapons(), ['gun']);
   assert.throws(() => game.shoot('laser'), /not mounted/);
-  game.addExperience(60);
+  game.addExperience(300);
   assert.deepEqual(game.getActiveWeapons(), ['gun', 'laser']);
-  game.addExperience(640);
+  game.addExperience(3200);
   assert.deepEqual(game.getActiveWeapons(), ['gun', 'laser', 'homing']);
-  game.addExperience(1280);
+  game.addExperience(6400);
   assert.deepEqual(game.getActiveWeapons(), WEAPONS);
   const first = game.player.weapons;
   const initialDamage = game.getCombatStats().damage;
@@ -97,9 +97,9 @@ test('legacy exact v2 saves explicitly resume the original gun and unknown weapo
   assert.throws(() => validateCheckpoint({ ...checkpoint, player: { ...checkpoint.player, weaponTime: 12 } }), /checkpoint player/);
 });
 
-test('natural five-kill loot cycles laser, homing, explosive, gun and repair', () => {
+test('natural loot spaces reinforcement at increasing kill milestones while retaining the weapon cycle', () => {
   const game = quiet();
-  for (let kill = 0; kill < 25; kill++) {
+  for (let kill = 0; kill < 80; kill++) {
     const enemy = target(game, 200, 160, 1);
     game.destroyEnemy(enemy);
     game.enemies = [];
@@ -123,6 +123,65 @@ test('laser pierces aligned enemies with continuous damage and misses a target o
   advance(game, 0.15);
   assert.ok(near.hp < halfwayHp);
   assert.equal(game.playerBeams.length, 0, 'laser rays retire after their short pulse');
+});
+
+test('gun, laser and blast damage share the same visible entry boundary for fighters and bosses', () => {
+  for (const type of ['scout', 'boss']) {
+    for (const weapon of ['gun', 'laser', 'explosive']) {
+      const game = quiet();
+      let enemy;
+      if (type === 'boss') { game.spawnBoss(); enemy = game.enemies[0]; }
+      else enemy = target(game, game.player.x, 0);
+      game.enemies = [enemy];
+      enemy.hp = enemy.maxHp = 10000;
+      enemy.y = type === 'boss' ? 158 : enemy.r - 2;
+      enemy.speed = 0; enemy.sway = 0;
+      const entrance = type === 'boss' ? 160 : enemy.r;
+      if (weapon === 'laser') {
+        equip(game, 'laser'); game.shoot('laser');
+      } else if (weapon === 'explosive') {
+        game.explodePlayerBullet({ x: enemy.x, y: enemy.y, damage: 20, blastRadius: 80 });
+      } else {
+        game.playerBullets.push({ x: enemy.x, y: enemy.y, vx: 0, vy: 0, r: 4, damage: 20, kind: 'gun' });
+      }
+      game.update(STEP);
+      assert.equal(enemy.hp, 10000, type + ' is not damaged during entry by ' + weapon);
+      enemy.y = entrance;
+      if (weapon === 'explosive') game.explodePlayerBullet({ x: enemy.x, y: enemy.y, damage: 20, blastRadius: 80 });
+      if (weapon === 'gun') Object.assign(game.playerBullets[0], { x: enemy.x, y: enemy.y });
+      game.update(STEP);
+      assert.ok(enemy.hp < 10000, type + ' can be attacked after entry by ' + weapon);
+    }
+  }
+});
+
+test('homing missiles release an ineligible target and acquire it only after visible entry', () => {
+  const game = quiet();
+  const enemy = target(game, game.player.x + 75, -5);
+  game.enemies = [enemy]; enemy.speed = 0; enemy.sway = 0;
+  equip(game, 'homing'); game.shoot('homing');
+  game.playerBullets[0].targetId = enemy.id;
+  game.update(STEP);
+  assert.ok(game.playerBullets.every(bullet => bullet.targetId === null));
+  enemy.y = enemy.r;
+  game.update(STEP);
+  assert.ok(game.playerBullets.every(bullet => bullet.targetId === enemy.id));
+});
+
+test('boss approach freezes hostile attacks until the warning entrance has completed', () => {
+  const game = quiet();
+  game.spawnBoss();
+  const boss = game.enemies[0];
+  const initialTimer = boss.fireTimer;
+  advance(game, 2.6);
+  assert.ok(boss.y < 160);
+  assert.equal(boss.hp, boss.maxHp);
+  assert.equal(boss.fireTimer, initialTimer);
+  assert.equal(boss.volley, 0);
+  assert.equal(game.enemyBullets.length, 0);
+  advance(game, 0.9);
+  assert.equal(boss.y, 160);
+  assert.ok(boss.volley > 0, 'the boss begins its real attack cycle shortly after arrival');
 });
 
 test('homing missiles steer toward a displaced target, preserve speed and hit without moving the pilot', () => {
@@ -345,7 +404,7 @@ test('fixed simulation steps reproduce laser and homing combat at high and low d
 
 test('each mounted weapon fires on its independent cadence while the base gun is always retained', () => {
   const game = quiet();
-  game.addExperience(1980);
+  game.addExperience(9900);
   for (const weapon of ['laser', 'homing', 'explosive']) collect(game, weapon);
   game.playerBullets = [];
   game.playerBeams = [];
@@ -367,7 +426,7 @@ test('each mounted weapon fires on its independent cadence while the base gun is
 
 test('repeat pickups strengthen only their own weapon and do not delete an existing beam', () => {
   const game = quiet();
-  game.addExperience(1980);
+  game.addExperience(9900);
   for (const weapon of ['laser', 'homing', 'explosive']) collect(game, weapon);
   game.shoot('laser');
   const beam = game.playerBeams[0];
@@ -395,7 +454,7 @@ test('all twenty levels use the shared appearance and cap while level and late s
   const game = quiet();
   let previousStats = game.getCombatStats();
   for (let level = 2; level <= 20; level++) {
-    const threshold = 20 * (level - 1) ** 2 + 40 * (level - 1);
+    const threshold = 100 * (level - 1) ** 2 + 200 * (level - 1);
     game.addExperience(threshold - game.profile.totalXp);
     assert.equal(game.progression.level, level);
     assert.strictEqual(game.player.appearance, getPlayerModel(level).appearance);
@@ -432,7 +491,7 @@ test('all twenty levels use the shared appearance and cap while level and late s
 
 test('actual high-level auto fire produces more shots and damage than the original aircraft', () => {
   const fresh = quiet(), grown = quiet();
-  grown.addExperience(7980);
+  grown.addExperience(39900);
   grown.stage = 99;
   grown.prepareStage();
   for (const game of [fresh, grown]) {
@@ -449,7 +508,7 @@ test('actual high-level auto fire produces more shots and damage than the origin
 test('all four stacked weapons reproduce the same combat at 120 FPS and 4 FPS', () => {
   const fast = quiet(), slow = quiet();
   for (const game of [fast, slow]) {
-    game.addExperience(7980);
+    game.addExperience(39900);
     game.stage = 98;
     game.prepareStage();
     game.nextWave = 10000;
@@ -471,7 +530,7 @@ test('late bosses have a practical kill time with acquired weapons and repeat ra
     const buildTimes = [];
     for (const rank of [1, 5]) {
       const game = quiet();
-      game.addExperience(7980);
+      game.addExperience(39900);
       game.stage = stage;
       game.prepareStage();
       game.nextWave = 10000;
@@ -493,7 +552,7 @@ test('late bosses have a practical kill time with acquired weapons and repeat ra
         assertBounds(game);
       }
       assert.equal(boss.destroyed, true, 'stage ' + (stage + 1) + ' must not stall at the level cap');
-      assert.ok(elapsed >= 3 && elapsed < 20, 'stage ' + (stage + 1) + ' rank ' + rank + ' kill time: ' + elapsed);
+      assert.ok(elapsed >= 8 && elapsed < (rank === 1 ? 30 : 20), 'stage ' + (stage + 1) + ' rank ' + rank + ' kill time: ' + elapsed);
       buildTimes.push(elapsed);
     }
     assert.ok(buildTimes[1] < buildTimes[0] * 0.7, 'repeated drops materially improve the late boss fight');

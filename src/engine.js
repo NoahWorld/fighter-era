@@ -27,13 +27,13 @@
       name: index < 3 ? earlyNames[index] : CHAPTERS[chapter] + ' · ' + String(mission).padStart(2, '0'),
       waves: index < 3 ? 7 + index : 7 + (chapter + mission - 1) % 4,
       interval: index < 3 ? 4.2 - index * 0.2 : 3.8 - lateProgress * 0.8,
-      bossHp: index < 3 ? 170 + index * 90 : Math.round(350 + index * 32 + Math.pow(index, 1.35) * 10),
+      bossHp: 320 + index * 90 + index * index * 3,
       bossForm: index % 2 === 0 ? 'warship' : 'fighter',
       bossSkin: (chapter + Math.floor((mission - 1) / 2)) % 10,
       bossPattern: index < 3 ? 0 : (chapter + mission - 1) % 3,
       wavePattern: index < 3 ? 0 : index % 4,
       formation: index < 3 ? 0 : (chapter + mission - 1) % 3,
-      hpBoost: index < 3 ? index : 2 + 10 * Math.sqrt(lateProgress),
+      hpBoost: 1 + index * 0.12 + index * index * 0.004,
       speedBoost: index < 3 ? index * 8 : 16 + 40 * lateProgress,
       bulletSpeedBoost: index < 3 ? index * 15 : 30 + 77 * lateProgress,
       fighterFireInterval: index < 3 ? 2.2 - index * 0.2 : 1.8 - 0.55 * lateProgress,
@@ -51,10 +51,15 @@
     return (dx - Math.cos(beam.angle) * along) ** 2 + (dy - Math.sin(beam.angle) * along) ** 2 < (target.r + beam.width / 2) ** 2;
   };
   const boundedPush = (items, item, limit) => { if (items.length >= limit) return false; items.push(item); return true; };
-  const experienceForLevel = level => 20 * (level - 1) ** 2 + 40 * (level - 1);
+  const experienceForLevel = level => 100 * (level - 1) ** 2 + 200 * (level - 1);
+  // Attacks share one entry boundary. A fighter must enter the playfield;
+  // a boss completes its warning approach before either side can engage it.
+  const combatReady = enemy => enemy.y >= (enemy.type === 'boss' ? 160 : enemy.r)
+    && enemy.y - enemy.r < HEIGHT && enemy.x >= enemy.r && enemy.x <= WIDTH - enemy.r;
   const initialWeapons = () => Object.freeze({ gun: 1, laser: 0, homing: 0, explosive: 0 });
   function progressionFor(totalXp) {
-    const level = Math.min(MAX_AIRCRAFT_LEVEL, Math.floor(Math.sqrt(1 + totalXp / 20)));
+    let level = 1;
+    while (level < MAX_AIRCRAFT_LEVEL && totalXp >= experienceForLevel(level + 1)) level++;
     return { totalXp, level, xp: level === MAX_AIRCRAFT_LEVEL ? 0 : totalXp - experienceForLevel(level),
       nextXp: level === MAX_AIRCRAFT_LEVEL ? 0 : experienceForLevel(level + 1) - experienceForLevel(level),
       tier: level < 3 ? 1 : level < 6 ? 2 : level < 10 ? 3 : 4, title: getPlayerModel(level).title };
@@ -139,12 +144,12 @@
     getActiveWeapons() {
       return WEAPONS.filter(kind => this.player.weapons[kind] > 0).slice(0, getPlayerModel(this.player.shipLevel).mountSlots);
     }
-    baseDamage() { return 1 + (this.player.shipLevel - 1) * 0.1 + this.stage * 0.04 + this.damageBonus; }
+    baseDamage() { return 1 + (this.player.shipLevel - 1) * 0.12 + this.stage * 0.1 + this.damageBonus; }
     getCombatStats() {
       const level = this.player.shipLevel;
       const model = getPlayerModel(level);
       const speedGrowth = 1 + (level - 1) * 0.01 + this.stage * 0.003;
-      return { damage: this.baseDamage() * (1 + (this.player.weapons.gun - 1) * 0.2),
+      return { damage: this.baseDamage() * (1 + (this.player.weapons.gun - 1) * 0.12),
         fireInterval: this.fireInterval / speedGrowth, mountSlots: model.mountSlots, activeWeapons: this.getActiveWeapons() };
     }
     weaponFireInterval(kind) {
@@ -230,7 +235,7 @@
       Object.assign(this.player, checkpoint.player);
       this.fireInterval = checkpoint.fireInterval;
       this.damageBonus = checkpoint.damageBonus;
-      if (this.fireInterval === MIN_FIRE_INTERVAL) this.upgradeOptions.find(option => option.id === 'rapid').description = '射速已达上限 · 单发伤害 +0.4';
+      if (this.fireInterval === MIN_FIRE_INTERVAL) this.upgradeOptions.find(option => option.id === 'rapid').description = '射速已达上限 · 单发伤害 +0.2';
       this.prepareStage();
       this.supportCharges = checkpoint.freeCharges.support;
       this.bombCharges = checkpoint.freeCharges.bomb;
@@ -311,7 +316,7 @@
       this.particles = [];
       this.upgradeOptions = [
         { id: 'spread', title: '扩散火力', description: '增加侧翼弹道 · 满级后提升伤害' },
-        { id: 'rapid', title: '极速机炮', description: '射速提升 25% · 上限后单发伤害 +0.4' },
+        { id: 'rapid', title: '极速机炮', description: '射击间隔缩短 8% · 上限后单发伤害 +0.2' },
         { id: 'repair', title: '装甲补给', description: '恢复 3 格装甲 · 上限增加 1 格' }
       ];
       this.damageBonus = 0;
@@ -391,11 +396,11 @@
       if (!Number.isInteger(this.stage) || this.stage < 0 || this.stage >= STAGES.length - 1) throw new RangeError('No upgrade transition after stage index: ' + this.stage);
       if (id === 'spread') {
         if (this.player.weaponLevel < 3) this.player.weaponLevel++;
-        else this.damageBonus += 0.4;
+        else this.damageBonus += 0.2;
       } else if (id === 'rapid') {
-        if (this.fireInterval > MIN_FIRE_INTERVAL) this.fireInterval = Math.max(MIN_FIRE_INTERVAL, this.fireInterval * 0.8);
-        else this.damageBonus += 0.4;
-        if (this.fireInterval === MIN_FIRE_INTERVAL) upgrade.description = '射速已达上限 · 单发伤害 +0.4';
+        if (this.fireInterval > MIN_FIRE_INTERVAL) this.fireInterval = Math.max(MIN_FIRE_INTERVAL, this.fireInterval * 0.92);
+        else this.damageBonus += 0.2;
+        if (this.fireInterval === MIN_FIRE_INTERVAL) upgrade.description = '射速已达上限 · 单发伤害 +0.2';
       }
       else {
         this.player.maxHp++;
@@ -547,7 +552,7 @@
           enemy.y += enemy.speed * dt;
           enemy.x = clamp(enemy.baseX + Math.sin(enemy.t * enemy.swayRate + enemy.phase) * enemy.sway, enemy.r, WIDTH - enemy.r);
         }
-        if (enemy.type === 'planet' && enemy.y < 124) continue;
+        if (!combatReady(enemy) || (enemy.type === 'planet' && enemy.y < 124)) continue;
         enemy.fireTimer -= dt;
         if (enemy.type === 'planet') {
           if (enemy.fireTimer <= .9 && !enemy.aimLocked) {
@@ -601,7 +606,7 @@
       for (const bullet of this.playerBullets) {
         if (bullet.dead) continue;
         for (const enemy of this.enemies) {
-          if (enemy.hp <= 0 || !collides(bullet, enemy)) continue;
+          if (enemy.hp <= 0 || !combatReady(enemy) || !collides(bullet, enemy)) continue;
           bullet.dead = true;
           if (bullet.kind === 'explosive') {
             this.explodePlayerBullet(bullet);
@@ -626,7 +631,7 @@
         if (this.state !== 'playing') return;
       }
       for (const enemy of this.enemies) {
-        if (enemy.hp > 0 && collides(enemy, this.player)) {
+        if (enemy.hp > 0 && combatReady(enemy) && collides(enemy, this.player)) {
           this.hurt();
           if (this.state !== 'playing') return;
           if (enemy.type !== 'boss') { enemy.hp = 0; this.burst(enemy.x, enemy.y, '#ffbd6c', 15); }
@@ -680,11 +685,11 @@
     tickProjectiles(dt) {
       for (const bullet of this.playerBullets) {
         if (bullet.kind === 'homing') {
-          let target = this.enemies.find(enemy => enemy.id === bullet.targetId && enemy.hp > 0 && !enemy.destroyed && enemy.y < bullet.y + enemy.r);
+          let target = this.enemies.find(enemy => enemy.id === bullet.targetId && enemy.hp > 0 && !enemy.destroyed && combatReady(enemy) && enemy.y < bullet.y + enemy.r);
           if (!target) {
             let distance = Infinity;
             for (const enemy of this.enemies) {
-              if (enemy.hp <= 0 || enemy.destroyed || enemy.y >= bullet.y + enemy.r || enemy.y < -enemy.r) continue;
+              if (enemy.hp <= 0 || enemy.destroyed || !combatReady(enemy) || enemy.y >= bullet.y + enemy.r) continue;
               const d = (enemy.x - bullet.x) ** 2 + (enemy.y - bullet.y) ** 2;
               if (d < distance) { distance = d; target = enemy; }
             }
@@ -720,7 +725,7 @@
     explodePlayerBullet(bullet) {
       this.weaponExplosion(bullet.x, bullet.y, bullet.blastRadius, '#f9c976');
       // Resolve regular kills first so a simultaneous boss kill settles once.
-      const targets = this.enemies.filter(enemy => enemy.hp > 0 && !enemy.destroyed
+      const targets = this.enemies.filter(enemy => enemy.hp > 0 && !enemy.destroyed && combatReady(enemy)
         && Math.hypot(enemy.x - bullet.x, enemy.y - bullet.y) < bullet.blastRadius + enemy.r)
         .sort((a, b) => Number(a.type === 'boss') - Number(b.type === 'boss'));
       for (const enemy of targets) {
@@ -734,7 +739,7 @@
       for (const beam of this.playerBeams) {
         beam.t += dt;
         for (const enemy of this.enemies) {
-          if (enemy.hp <= 0 || enemy.destroyed || !rayCollides(beam, enemy)) continue;
+          if (enemy.hp <= 0 || enemy.destroyed || !combatReady(enemy) || !rayCollides(beam, enemy)) continue;
           enemy.hp -= beam.damagePerSecond * dt;
           enemy.hit = 0.07;
           if (enemy.hp <= 0) { this.destroyEnemy(enemy); if (this.state !== 'playing') return false; }
@@ -762,8 +767,8 @@
         const x = type === 'planet' ? (wave % 8 === 3 ? 118 : 287) : 49 + i * ((WIDTH - 98) / (count - 1));
         const stagger = config.formation === 1 ? (count - 1 - i) * 28 : config.formation === 2 ? i % 2 * 55 : wave % 2 === 0 ? Math.abs(i - (count - 1) / 2) * 35 : i * 30;
         const y = -40 - stagger;
-        const baseHp = { scout: 3, striker: 7, warship: 24, planet: 32 }[type];
-        const hp = Math.round(baseHp + config.hpBoost * (type === 'warship' || type === 'planet' ? 6 : 1));
+        const baseHp = { scout: 8, striker: 18, warship: 65, planet: 80 }[type];
+        const hp = Math.round(baseHp * config.hpBoost);
         const level = Math.min(MAX_AIRCRAFT_LEVEL, 1 + Math.floor(this.stage / 5) + (type === 'striker' ? 1 : 0));
         const appearance = type === 'planet' ? undefined : getEnemyModel(level, type === 'warship' ? 'warship' : 'fighter').appearance;
         this.enemies.push({
@@ -785,7 +790,7 @@
       const level = Math.min(MAX_AIRCRAFT_LEVEL, 1 + Math.floor(this.stage / 5));
       const appearance = getEnemyModel(level, config.bossForm).appearance;
       const boss = { id: ++this.id, type: 'boss', level, form: config.bossForm, appearance, pattern: config.bossPattern,
-        x: WIDTH / 2, y: -70, r: 56, hp, maxHp: hp, t: 0, hit: 0, fireTimer: 2.8, volley: 0,
+        x: WIDTH / 2, y: -70, r: 56, hp, maxHp: hp, t: 0, hit: 0, fireTimer: 0.6, volley: 0,
         weaponIndex: this.stage < 3 ? 0 : this.stage % WEAPONS.length };
       this.enemies.push(boss);
       this.banner = '';
@@ -884,10 +889,15 @@
         this.emit('boss', { phase: 'defeated', stage: this.stage, enemyId: enemy.id });
         if (this.stage === STAGES.length - 1) this.finish('victory');
         else { this.captureCheckpoint('upgrade'); this.setState('upgrade'); }
-      } else if (this.kills % 5 === 0) {
-        const drop = (Math.floor(this.kills / 5) - 1) % 5;
-        boundedPush(this.pickups, { x: enemy.x, y: enemy.y, r: 12, t: 0,
-          ...(drop === 4 ? { type: 'repair' } : { type: 'weapon', weapon: ['laser', 'homing', 'explosive', 'gun'][drop] }) }, LIMITS.pickups);
+      } else {
+        // Increasing gaps spread reinforcement across the expedition; derive
+        // this from saved kills so reloads cannot reset the reward schedule.
+        const dropNumber = Math.floor((Math.sqrt(121 + 4 * this.kills) - 11) / 2);
+        if (dropNumber > 0 && dropNumber * (dropNumber + 11) === this.kills) {
+          const drop = (dropNumber - 1) % 5;
+          boundedPush(this.pickups, { x: enemy.x, y: enemy.y, r: 12, t: 0,
+            ...(drop === 4 ? { type: 'repair' } : { type: 'weapon', weapon: ['laser', 'homing', 'explosive', 'gun'][drop] }) }, LIMITS.pickups);
+        }
       }
     }
     hurt() {

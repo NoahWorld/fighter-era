@@ -1333,37 +1333,23 @@
       const p = game.progression;
       this.button(this.pauseButton());
       if (game.state === 'playing') for (const button of this.abilityButtons(game)) this.button(button);
-      this.text('LV', 22, 77, 7, '#708aab', '500', 'center');
-      this.text(p.level, 22, 94, 16, '#dce9fb', '500', 'center');
-      this.line(10, 111, 33, 111, 'rgba(173,190,217,0.2)', 0.7);
-      const healthSegments = Math.min(8, game.player.maxHp);
-      const healthHeight = 50;
-      const segmentHeight = (healthHeight - (healthSegments - 1) * 2) / healthSegments;
-      const filledSegments = Math.max(0, Math.min(1, game.player.hp / game.player.maxHp)) * healthSegments;
-      for (let i = 0; i < healthSegments; i += 1) {
-        const y = 121 + (healthSegments - 1 - i) * (segmentHeight + 2);
-        this.box(17, y, 10, segmentHeight, '#233145', null, 1.5);
-        const fillHeight = Math.max(0, Math.min(1, filledSegments - i)) * segmentHeight;
-        if (fillHeight > 0) this.box(17, y + segmentHeight - fillHeight, 10, fillHeight, '#99cce2', null, 1.5);
+      this.text('等级', 22, 77, 8, '#8aa2c0', '500', 'center');
+      this.text(p.level, 22, 96, 17, '#dce9fb', '600', 'center');
+      this.box(10, 113, 24, 3, '#25334a', null, 1.5);
+      const experience = this.experienceRatio(p);
+      if (experience > 0) this.box(10, 113, 24 * experience, 3, '#d4b174', null, 1.5);
+      if (p.level === Aircraft.MAX_AIRCRAFT_LEVEL) this.text('满级', 22, 127, 7, '#d4b174', '500', 'center');
+      this.text('生命', 22, 146, 8, '#8aa2c0', '500', 'center');
+      if (!Number.isSafeInteger(game.player.hp) || !Number.isSafeInteger(game.player.maxHp)
+        || game.player.maxHp < 1 || game.player.hp < 0 || game.player.hp > game.player.maxHp) {
+        throw new RangeError('Invalid HUD health: hp=' + game.player.hp + '; maxHp=' + game.player.maxHp);
       }
       const healthLabel = game.player.hp + '/' + game.player.maxHp;
-      this.text(healthLabel, 22, 182, Math.min(7, 40 / healthLabel.length), '#a2b9d3', '500', 'center');
-      this.text(p.level === Aircraft.MAX_AIRCRAFT_LEVEL ? 'MAX' : 'XP', 22, 197, 7, '#7087a6', '500', 'center');
-      this.box(20, 208, 3, 41, '#25334a', null, 1.5);
-      const fill = this.experienceRatio(p) * 41;
-      this.box(20, 249 - fill, 3, fill, '#d4b174', null, 1.5);
-      const stats = game.getCombatStats();
-      this.text('挂载 ' + stats.activeWeapons.length + '/' + stats.mountSlots, 22, 267, 7, '#93b0d3', '500', 'center');
-      Object.entries(WEAPONS).forEach(([type, weapon], index) => {
-        const rank = game.player.weapons[type];
-        if (!Number.isInteger(rank) || rank < (type === 'gun' ? 1 : 0) || rank > weapon.maxLevel) throw new RangeError('Invalid HUD weapon rank: ' + type + '=' + rank);
-        const mounted = stats.activeWeapons.includes(type);
-        const label = type === 'gun' ? '机炮' : type === 'laser' ? '光柱' : type === 'homing' ? '追踪' : '爆炸';
-        this.text(label + rank + (rank > 0 && !mounted ? '储' : ''), 22, 287 + index * 22, 8,
-          mounted ? weapon.color : rank > 0 ? '#8591a8' : '#405471', mounted ? '500' : '400', 'center');
-      });
-      this.text('伤 ' + stats.damage.toFixed(1), 22, 386, 7, '#889eb9', '400', 'center');
-      this.text(stats.fireInterval.toFixed(2) + 's', 22, 403, 7, '#889eb9', '400', 'center');
+      const health = clamp01(game.player.hp / game.player.maxHp);
+      const healthColor = health <= 0.3 ? '#ee9b82' : '#99cce2';
+      this.text(healthLabel, 22, 162, Math.min(9, 40 / healthLabel.length), healthColor, '500', 'center');
+      this.box(18, 174, 8, 50, '#233145', null, 3);
+      if (health > 0) this.box(18, 224 - 50 * health, 8, 50 * health, healthColor, null, 3);
       this.text(String(game.score).padStart(6, '0'), 387, 80, 12, '#a4b8d2', '500', 'right');
       this.text(this.backgrounds[game.stage].name, 387, 99, 8, '#7992ac', '400', 'right');
       this.text(game.stageName + '  ' + (game.stage + 1) + '/' + game.stageCount, 383, 687, 9, '#8195b0', '400', 'right');
@@ -1446,7 +1432,23 @@
       }
       this.text(paused ? '战机待命' : victory ? '最终 BOSS 已击败' : '我方战机已被击败', W / 2, y + 108, 25, C.text, '600', 'center');
       this.text(paused ? '准备好，继续穿越星海。' : victory ? game.stageCount + ' 关全部突破，群星见证你的航迹。' : '本局成长已重置 · 再次出击从第 1 关开始', W / 2, y + 143, 11, '#91a3bd', '400', 'center');
-      if (!paused) {
+      if (paused) {
+        this.text('当前武器', W / 2, y + 163, 8, '#839ab8', '500', 'center');
+        const mounted = game.getActiveWeapons();
+        let index = 0;
+        for (const [type, weapon] of Object.entries(WEAPONS)) {
+          const rank = game.player.weapons[type];
+          if (!Number.isInteger(rank) || rank < (type === 'gun' ? 1 : 0) || rank > weapon.maxLevel) {
+            throw new RangeError('Invalid paused weapon rank: ' + type + '=' + rank);
+          }
+          if (rank === 0) continue;
+          const active = mounted.includes(type);
+          this.text(weapon.label + ' ' + rank + '级' + (active ? '' : ' · 待挂载'),
+            63 + index % 2 * 149, y + 184 + Math.floor(index / 2) * 18, 9,
+            active ? weapon.color : '#879ab6', '500');
+          index++;
+        }
+      } else {
         this.text(String(game.score).padStart(6, '0'), W / 2, 327, 42, accent, '500', 'center');
         this.text('击落 ' + game.kills + ' 架  /  抵达第 ' + (game.stage + 1) + ' 关', W / 2, 365, 10, '#8c9fb9', '400', 'center');
         const result = game.resultProgression || game.progression;
