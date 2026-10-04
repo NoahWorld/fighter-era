@@ -196,6 +196,71 @@ async function simulateWechatApi(options = {}) {
   };
 }
 
+test('WeChat hangar touch browsing is read-only and starts a basic roguelike fighter', async () => {
+  const app = await simulateWechatApi();
+  const saved = app.storage.get('fighter-era.run.v2');
+  app.press('hangar'); app.release();
+  for (const category of ['player', 'enemy', 'warship']) {
+    app.press('hangar:tab:' + category); app.release();
+    while (!app.renderer.getButtons(app.game).some(button => button.id === 'hangar:model:20')) {
+      app.press('hangar:next'); app.release();
+    }
+    app.press('hangar:model:20'); app.release();
+    app.touch('TouchStart', 100, 660); app.touch('TouchMove', 170, 610); app.release();
+    assert.equal(app.game.state, 'menu');
+    assert.equal(app.game.progression.level, 1);
+    assert.equal(app.game.getCheckpoint(), null);
+    assert.deepEqual(app.storage.get('fighter-era.run.v2'), saved);
+    assert.ok(!app.renderer.getButtons(app.game).some(button => ['start', 'support', 'bomb'].includes(button.id)));
+  }
+  app.press('hangar:close'); app.release(); app.press('start'); app.release();
+  assert.equal(app.renderer.hangar, null);
+  assert.equal(app.game.state, 'launching');
+  assert.equal(app.game.progression.level, 1);
+  assert.deepEqual(app.game.getActiveWeapons(), ['gun']);
+  assert.equal(app.game.bombCharges, 1);
+  assert.equal(app.game.supportCharges, 1);
+});
+
+test('WeChat hangar buttons keep the first contact locked until that finger releases', async () => {
+  const app = await simulateWechatApi();
+  function touchButton(id, identifier) {
+    const button = app.renderer.getButtons(app.game).find(item => item.id === id);
+    assert.ok(button, 'expected a visible ' + id + ' button');
+    app.touch('TouchStart', button.x + button.w / 2, button.y + button.h / 2, identifier);
+  }
+  function releaseFinger(identifier) { app.touch('TouchEnd', 100, 500, identifier); }
+
+  touchButton('hangar', 11);
+  touchButton('hangar:next', 22);
+  touchButton('hangar:close', 22);
+  assert.equal(app.renderer.hangar.page, 0, 'a second finger cannot turn the page');
+  assert.equal(app.game.state, 'menu');
+  releaseFinger(22);
+  touchButton('hangar:close', 22);
+  assert.ok(app.renderer.hangar, 'releasing an ignored finger cannot unlock the first contact');
+
+  releaseFinger(11);
+  touchButton('hangar:next', 22);
+  assert.equal(app.renderer.hangar.page, 1, 'a fresh contact may navigate after the original release');
+  touchButton('hangar:close', 33);
+  assert.ok(app.renderer.hangar, 'navigation also keeps its own contact locked');
+
+  releaseFinger(22);
+  touchButton('hangar:close', 33);
+  assert.equal(app.renderer.hangar, null);
+  touchButton('start', 44);
+  assert.equal(app.game.state, 'menu', 'closing the gallery cannot let another finger launch a sortie');
+  releaseFinger(44);
+  touchButton('start', 44);
+  assert.equal(app.game.state, 'menu', 'an ignored menu contact cannot release the close-button lock');
+  releaseFinger(33);
+  touchButton('start', 44);
+  assert.equal(app.game.state, 'launching', 'the menu accepts a fresh contact after the close finger releases');
+  assert.equal(app.game.progression.level, 1);
+  assert.deepEqual(app.game.getActiveWeapons(), ['gun']);
+});
+
 test('WeChat empty consumables pause for unavailable rewards without consuming or granting inventory', async () => {
   const app = await simulateWechatApi();
   app.press('start'); finishLaunch(app.game); app.release();

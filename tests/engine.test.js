@@ -641,7 +641,7 @@ test('experience carries across boundaries and can unlock several ship levels in
   assert.equal(game.getProfile().totalXp, 305);
   assert.equal(game.player.shipLevel, 4);
   assert.equal(game.player.tier, 2);
-  assert.equal(game.progression.title, '破晓');
+  assert.equal(game.progression.title, '流星');
   assert.equal(events.filter(event => event.name === 'progression').length, 2);
   assert.ok(events.some(event => event.name === 'levelup'));
   const levelUpEvents = events.filter(event => event.name === 'levelup').length;
@@ -652,8 +652,8 @@ test('experience carries across boundaries and can unlock several ship levels in
 
 test('ship tier unlocks occur at the documented cumulative experience boundaries', () => {
   for (const [totalXp, level, tier, title] of [
-    [0, 1, 1, '游隼'], [159, 2, 1, '游隼'], [160, 3, 2, '破晓'],
-    [699, 5, 2, '破晓'], [700, 6, 3, '雷霆'], [1979, 9, 3, '雷霆'], [1980, 10, 4, '星曜']
+    [0, 1, 1, '游隼'], [159, 2, 1, '银翼'], [160, 3, 2, '破晓'],
+    [699, 5, 2, '远征'], [700, 6, 3, '雷霆'], [1979, 9, 3, '极光'], [1980, 10, 4, '星曜']
   ]) {
     const game = started();
     if (totalXp > 0) game.addExperience(totalXp);
@@ -712,12 +712,12 @@ test('current run ship levels increase real projectile damage and stack with run
   game.update(STEP);
   assert.equal(game.player.shipLevel, 6);
   assert.equal(game.playerBullets.length, 2);
-  assert.ok(game.playerBullets.every(bullet => Math.abs(bullet.damage - 1.3) < 1e-10));
+  assert.ok(game.playerBullets.every(bullet => Math.abs(bullet.damage - 1.5) < 1e-10));
   game.damageBonus = 0.4;
   game.playerBullets = [];
   game.fireTimer = 0;
   game.update(STEP);
-  assert.ok(game.playerBullets.every(bullet => Math.abs(bullet.damage - 1.7) < 1e-10));
+  assert.ok(game.playerBullets.every(bullet => Math.abs(bullet.damage - 1.9) < 1e-10));
 });
 
 test('a level-up heals one armor, expands current run capacity, and a fresh run resets every strength upgrade', () => {
@@ -1225,7 +1225,7 @@ test('100 immutable missions cover ten chapters with bounded late combat and bot
     assert.ok(config.chapterName.length > 0);
     assert.ok(config.waves >= 7 && config.waves <= 10);
     assert.ok(config.interval >= 3 && config.interval <= 4.2);
-    assert.ok(config.bossHp >= 170 && config.bossHp <= 900);
+    assert.ok(config.bossHp >= 170 && config.bossHp <= 9000);
     if (index > 0) assert.ok(config.bossHp >= STAGES[index - 1].bossHp);
     assert.ok(config.hpBoost >= 0 && config.hpBoost <= 12);
     assert.ok(config.speedBoost >= 0 && config.speedBoost <= 56);
@@ -1262,6 +1262,9 @@ test('every generated sprite has an explicit valid sheet, skin, and downward ori
         assert.equal(enemy.appearance, undefined, 'planetary weapons use their procedural renderer');
         continue;
       }
+      const form = enemy.type === 'boss' ? enemy.form : enemy.type === 'warship' ? 'warship' : 'fighter';
+      assert.ok(enemy.level >= 1 && enemy.level <= 20);
+      assert.deepEqual(enemy.appearance, require('../src/aircraft.js').getEnemyModel(enemy.level, form).appearance);
       const { sheet, index, rotation } = enemy.appearance;
       assert.equal(Object.isFrozen(enemy.appearance), true);
       assert.ok(Object.hasOwn(frameCounts, sheet), 'registered sprite sheet: ' + sheet);

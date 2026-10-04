@@ -33,7 +33,7 @@ docker compose logs --tail 100 api
 
 启动先执行事务迁移并核验已应用迁移的摘要；迁移失败时服务停止，不能跳过或改写旧迁移制造就绪状态。升级数据库结构须新增迁移文件。肉鸽版本新增迁移 `002_roguelike_saves.sql`，清空旧永久经验和续关并停用旧存活对局编号，但保留账号、库存与历史成绩。武器与免费次数版本新增 `003_run_free_charges.sql`，只增加战机对局的两个计数字段及约束，历史行保留。更新前先备份，再同步审查后的项目文件及公开试玩目录；未启用 HTTPS 时使用基础 Compose 配置，已启用时按后文双配置命令更新。始终保留 `deploy/.env` 与 `backups/`。
 
-浏览器网站由独立 `web` 容器提供，目录为 `/opt/fighter-era/playtest`，只复制 `server.js`、`index.html`、`game.html`、`style.css`、`src/browser.js`、`src/engine.js`、`src/renderer.js`、`src/assets.js` 与六张图集，按原路径组织。`/` 为字数统计工具，`/game` 和 `/game/` 显示游戏；游戏 HTML 以根目录 base 解析素材。静态服务仅允许公开资源；私有配置、后端源码和 Git 数据不可访问。默认公开端口 8080，可在私有配置中设置 `PLAYTEST_PORT`。云安全组需放行此 TCP 端口；已有 80 端口应用不变。启动前必须先创建并填充网站目录，不能让空目录伪装健康。只更新首页和静态路由时，备份当前公开文件后同步 `server.js`、`index.html`、`game.html`，使用双配置命令 `docker compose -f compose.yaml -f compose.https.yaml restart web`，无需重建 API、数据库或网关；随后检查首页、两个游戏路由及资源。
+浏览器网站由独立 `web` 容器提供，目录为 `/opt/fighter-era/playtest`，只复制 `server.js`、`index.html`、`game.html`、`style.css`、`src/browser.js`、`src/aircraft.js`、`src/engine.js`、`src/renderer.js`、`src/assets.js` 与六张图集，按原路径组织。`/` 为字数统计工具，`/game` 和 `/game/` 显示游戏；游戏 HTML 以根目录 base 解析素材。静态服务仅允许公开资源；私有配置、后端源码和 Git 数据不可访问。默认公开端口 8080，可在私有配置中设置 `PLAYTEST_PORT`。云安全组需放行此 TCP 端口；已有 80 端口应用不变。启动前必须先创建并填充网站目录，不能让空目录伪装健康。只更新首页和静态路由时，备份当前公开文件后同步 `server.js`、`index.html`、`game.html`，使用双配置命令 `docker compose -f compose.yaml -f compose.https.yaml restart web`，无需重建 API、数据库或网关；随后检查首页、两个游戏路由及资源。
 
 浏览器试玩使用本机存档，可用于朋友测试；真实微信登录和跨设备账号存档仍需要 AppSecret、微信 request 合法域名和客户端公开 `apiBase`。`/health/ready` 报告数据库 `ready`、微信 `pending_configuration`，以及支付和广告 `not_enabled`，只代表数据库服务可用。
 
@@ -107,6 +107,14 @@ docker compose exec -T db psql -U postgres -d fighter_era_restore_test -v ON_ERR
 实际恢复生产库前须确定目标、停写时段、备份和回退方案。恢复演练成功不代表异机恢复或生产事故恢复已验证，不能把测试库操作直接改成生产库覆盖执行。
 
 ## 当前验证范围
+
+武器叠加与 20 级图鉴版本于 2026-10-04 完成以下检查：
+
+- 客户端 185 项及服务器后端 48 项测试通过，0 失败、0 跳过；后端包含 23 项单元与 25 项真实 PostgreSQL 集成测试，使用专用库 `fighter_era_hangar_test`，完成后已删除且临时私有配置已清理。生产用户数仍为 0，迁移仍为 001、002、003，没有新增数据库迁移。
+- 实际浏览器在服务器游戏中查看三类图鉴至 Lv.20；浏览高级机型后新出击仍从 Lv.1 开始，自动开火与暂停正常。390 × 844 的实际页面嵌入验证机库布局、翻页及详情；独立固定场景检查 60 个机型、十类背景和五个武器场景。检查时控制台无警告或错误；此次不代表微信真机检查或人工 100 关通关。
+- 公网 HTTP 8080 的首页、游戏、样式、五个 JS 与六张图集共 14 项返回 200，SHA-256 与本地一致，`/game/` 同样匹配；五项私有路径返回 404。主域名与 www 的首页、游戏及 API 就绪检查通过指定 IP 的严格 TLS 验证；微信仍待配置、支付与广告未启用。DNS 保持备案暂停。
+- 更新前源文件及静态目录备份为 `/opt/fighter-era/hangar-growth-deploy-audit/20261004/before-source.tgz`，数据库备份为同目录 `before.dump`；更新后 `after.dump` 非空且两个数据库归档目录均可读取，此次未做恢复演练。后端测试日志同目录保存为 `backend-tests.log`，旧 API 镜像保留为 `fighter-era-api:before-hangar-20261004`。
+- 发布仅复制游戏项目与公开资源、更新游戏 API，web、db、gateway 与既有应用容器身份保持不变，原应用 HTTP 200。没有修改 `/opt/learning-workbench` 的文件、服务或数据库；私有 `deploy/.env` 保留且权限为 600。备案期间使用 [游戏页面](http://47.116.38.160:8080/game)，浏览器仍只保存同来源的本机记录。
 
 武器、背景与免费次数版本于 2026-10-04 完成以下检查：
 

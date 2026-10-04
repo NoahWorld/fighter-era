@@ -67,7 +67,7 @@ test('public site serves the tool homepage and game routes without exposing priv
   assert.equal((await request(port, '/game', 'HEAD')).body.length, 0);
   assert.equal((await request(port, '/game', 'POST')).status, 405);
   assert.equal((await request(port, '/game/unknown')).status, 404);
-  for (const resource of ['/src/engine.js', '/src/browser.js', '/assets/player.png', '/assets/expansion/fleet.png']) {
+  for (const resource of ['/src/aircraft.js', '/src/engine.js', '/src/browser.js', '/assets/player.png', '/assets/expansion/fleet.png']) {
     const result = await request(port, resource);
     assert.equal(result.status, 200, resource);
     assert.ok(result.body.length > 0, resource);

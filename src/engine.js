@@ -1,8 +1,10 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.Shooter = factory();
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./aircraft.js'));
+  else root.Shooter = factory(root.ShooterAircraft);
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (aircraft) {
   'use strict';
+  if (!aircraft) throw new Error('Shooter aircraft catalogue must load before the game engine');
+  const { MAX_AIRCRAFT_LEVEL, getPlayerModel, getEnemyModel } = aircraft;
   const WIDTH = 405;
   const HEIGHT = 720;
   const MAX_PARTICLES = 320;
@@ -25,7 +27,7 @@
       name: index < 3 ? earlyNames[index] : CHAPTERS[chapter] + ' · ' + String(mission).padStart(2, '0'),
       waves: index < 3 ? 7 + index : 7 + (chapter + mission - 1) % 4,
       interval: index < 3 ? 4.2 - index * 0.2 : 3.8 - lateProgress * 0.8,
-      bossHp: index < 3 ? 170 + index * 90 : Math.round(350 + 55 * Math.sqrt(index - 2)),
+      bossHp: index < 3 ? 170 + index * 90 : Math.round(350 + index * 32 + Math.pow(index, 1.35) * 10),
       bossForm: index % 2 === 0 ? 'warship' : 'fighter',
       bossSkin: (chapter + Math.floor((mission - 1) / 2)) % 10,
       bossPattern: index < 3 ? 0 : (chapter + mission - 1) % 3,
@@ -50,16 +52,12 @@
   };
   const boundedPush = (items, item, limit) => { if (items.length >= limit) return false; items.push(item); return true; };
   const experienceForLevel = level => 20 * (level - 1) ** 2 + 40 * (level - 1);
-  const MODELS = [
-    { level: 1, title: '游隼' }, { level: 3, title: '破晓' },
-    { level: 6, title: '雷霆' }, { level: 10, title: '星曜' }
-  ];
+  const initialWeapons = () => Object.freeze({ gun: 1, laser: 0, homing: 0, explosive: 0 });
   function progressionFor(totalXp) {
-    const level = Math.floor(Math.sqrt(1 + totalXp / 20));
-    const modelIndex = MODELS.reduce((found, model, i) => level >= model.level ? i : found, 0);
-    return { totalXp, level, xp: totalXp - experienceForLevel(level),
-      nextXp: experienceForLevel(level + 1) - experienceForLevel(level),
-      tier: modelIndex + 1, title: MODELS[modelIndex].title };
+    const level = Math.min(MAX_AIRCRAFT_LEVEL, Math.floor(Math.sqrt(1 + totalXp / 20)));
+    return { totalXp, level, xp: level === MAX_AIRCRAFT_LEVEL ? 0 : totalXp - experienceForLevel(level),
+      nextXp: level === MAX_AIRCRAFT_LEVEL ? 0 : experienceForLevel(level + 1) - experienceForLevel(level),
+      tier: level < 3 ? 1 : level < 6 ? 2 : level < 10 ? 3 : 4, title: getPlayerModel(level).title };
   }
 
   function exactKeys(value, keys, context) {
@@ -72,10 +70,11 @@
   function validateCheckpoint(value) {
     if (value === null) return null;
     exactKeys(value, ['version', 'phase', 'stage', 'seed', 'randomState', 'entityId', 'totalTime', 'score', 'kills', 'runStartXp', 'totalXp', 'player', 'fireInterval', 'damageBonus', 'freeCharges'], 'checkpoint');
-    // Published v2 saves predate weapon pickups. Their exact three-field shape
-    // explicitly means the original gun; unknown fields and weapons still fail.
+    // Only the two published legacy shapes migrate; malformed partial new
+    // weapon records never gain a working loadout through implicit defaults.
     const legacyGun = value.player && !Object.prototype.hasOwnProperty.call(value.player, 'weapon');
-    exactKeys(value.player, legacyGun ? ['hp', 'maxHp', 'weaponLevel'] : ['hp', 'maxHp', 'weaponLevel', 'weapon'], 'checkpoint player');
+    const stacked = value.player && Object.prototype.hasOwnProperty.call(value.player, 'weapons');
+    exactKeys(value.player, stacked ? ['hp', 'maxHp', 'weaponLevel', 'weapon', 'weapons'] : legacyGun ? ['hp', 'maxHp', 'weaponLevel'] : ['hp', 'maxHp', 'weaponLevel', 'weapon'], 'checkpoint player');
     exactKeys(value.freeCharges, ['bomb', 'support'], 'checkpoint freeCharges');
     if (value.version !== 2 || !['stage', 'upgrade'].includes(value.phase)
       || !Number.isInteger(value.stage) || value.stage < 0 || value.stage >= STAGES.length
@@ -92,6 +91,13 @@
       || value.player.hp < 1 || value.player.maxHp < value.player.hp
       || !Number.isInteger(value.player.weaponLevel) || value.player.weaponLevel < 1 || value.player.weaponLevel > 3) throw new RangeError('Invalid checkpoint player stats');
     if (!legacyGun && !WEAPONS.includes(value.player.weapon)) throw new RangeError('Invalid checkpoint player weapon');
+    const weapon = legacyGun ? 'gun' : value.player.weapon;
+    const weapons = stacked ? value.player.weapons : { ...initialWeapons(), [weapon]: 1 };
+    exactKeys(weapons, WEAPONS, 'checkpoint player weapons');
+    for (const kind of WEAPONS) {
+      if (!Number.isInteger(weapons[kind]) || weapons[kind] < (kind === 'gun' ? 1 : 0) || weapons[kind] > 5) throw new RangeError('Invalid checkpoint player weapons rank: ' + kind);
+    }
+    if (weapons[weapon] === 0) throw new RangeError('Invalid checkpoint player weapon: selected weapon has not been acquired');
     if (!Number.isFinite(value.fireInterval) || value.fireInterval < MIN_FIRE_INTERVAL || value.fireInterval > 0.16
       || !Number.isFinite(value.damageBonus) || value.damageBonus < 0 || value.damageBonus > 40) throw new RangeError('Invalid checkpoint weapon stats');
     for (const item of ['bomb', 'support']) {
@@ -99,7 +105,8 @@
     }
     return { version: 2, phase: value.phase, stage: value.stage, seed: value.seed, randomState: value.randomState,
       entityId: value.entityId, totalTime: value.totalTime, score: value.score, kills: value.kills, runStartXp: value.runStartXp, totalXp: value.totalXp,
-      player: { ...value.player, weapon: legacyGun ? 'gun' : value.player.weapon }, fireInterval: value.fireInterval, damageBonus: value.damageBonus, freeCharges: { ...value.freeCharges } };
+      player: { hp: value.player.hp, maxHp: value.player.maxHp, weaponLevel: value.player.weaponLevel, weapon,
+        weapons: Object.freeze({ ...weapons }) }, fireInterval: value.fireInterval, damageBonus: value.damageBonus, freeCharges: { ...value.freeCharges } };
   }
 
   class Game {
@@ -129,6 +136,24 @@
 
     emit(name, payload = {}) { if (this.onEvent) this.onEvent(name, payload); }
     getProfile() { return { ...this.profile }; }
+    getActiveWeapons() {
+      return WEAPONS.filter(kind => this.player.weapons[kind] > 0).slice(0, getPlayerModel(this.player.shipLevel).mountSlots);
+    }
+    baseDamage() { return 1 + (this.player.shipLevel - 1) * 0.1 + this.stage * 0.04 + this.damageBonus; }
+    getCombatStats() {
+      const level = this.player.shipLevel;
+      const model = getPlayerModel(level);
+      const speedGrowth = 1 + (level - 1) * 0.01 + this.stage * 0.003;
+      return { damage: this.baseDamage() * (1 + (this.player.weapons.gun - 1) * 0.2),
+        fireInterval: this.fireInterval / speedGrowth, mountSlots: model.mountSlots, activeWeapons: this.getActiveWeapons() };
+    }
+    weaponFireInterval(kind) {
+      if (!WEAPONS.includes(kind) || this.player.weapons[kind] === 0) throw new RangeError('Cannot fire an unacquired weapon: ' + kind);
+      const stats = this.getCombatStats();
+      if (kind === 'gun') return stats.fireInterval;
+      const speedGrowth = this.fireInterval / stats.fireInterval;
+      return ({ laser: 0.72, homing: 0.9, explosive: 1.2 }[kind]) / speedGrowth / (1 + (this.player.weapons[kind] - 1) * 0.1);
+    }
     get savedCheckpoint() { return this._savedCheckpoint; }
     getCheckpoint() { return validateCheckpoint(this._savedCheckpoint); }
     storeCheckpoint(value, emit) {
@@ -148,7 +173,7 @@
     captureCheckpoint(phase = 'stage', emit = true) {
       this.storeCheckpoint({ version: 2, phase, stage: this.stage, seed: this.seed >>> 0, randomState: this.randomState,
         entityId: this.id, totalTime: this.totalTime, score: this.score, kills: this.kills, runStartXp: this.runStartXp, totalXp: this.profile.totalXp,
-        player: { hp: this.player.hp, maxHp: this.player.maxHp, weaponLevel: this.player.weaponLevel, weapon: this.player.weapon },
+        player: { hp: this.player.hp, maxHp: this.player.maxHp, weaponLevel: this.player.weaponLevel, weapon: this.player.weapon, weapons: this.player.weapons },
         fireInterval: this.fireInterval, damageBonus: this.damageBonus,
         freeCharges: { bomb: this.bombCharges, support: this.supportCharges } }, emit);
     }
@@ -159,7 +184,19 @@
     updateCheckpointWeapon() {
       if (!this._savedCheckpoint || this._savedCheckpoint.phase !== 'stage') throw new Error('No stage checkpoint for weapon pickup');
       this.storeCheckpoint({ ...this._savedCheckpoint, player: { ...this._savedCheckpoint.player,
-        weapon: this.player.weapon, weaponLevel: this.player.weaponLevel } }, true);
+        weapon: this.player.weapon, weapons: this.player.weapons, weaponLevel: this.player.weaponLevel } }, true);
+    }
+    acquireWeapon(kind) {
+      if (!WEAPONS.includes(kind)) throw new RangeError('Unknown pickup weapon: ' + kind);
+      if (!this._savedCheckpoint || this._savedCheckpoint.phase !== 'stage') throw new Error('No stage checkpoint for weapon pickup');
+      const weapons = Object.freeze({ ...this.player.weapons, [kind]: Math.min(5, this.player.weapons[kind] + 1) });
+      const checkpoint = validateCheckpoint({ ...this._savedCheckpoint,
+        player: { ...this._savedCheckpoint.player, weapon: kind, weapons, weaponLevel: this.player.weaponLevel } });
+      // Validate the whole boundary before changing live ranks, then publish one
+      // checkpoint whose listeners observe the matching live loadout.
+      this.player.weapon = kind;
+      this.player.weapons = weapons;
+      this.storeCheckpoint(checkpoint, true);
     }
     setInventory(value) {
       exactKeys(value, ['bomb', 'support'], 'inventory');
@@ -215,9 +252,13 @@
       this.player.maxHp = 5;
       this.player.weaponLevel = 1;
       this.player.weapon = 'gun';
+      this.player.weapons = initialWeapons();
+      this.player.appearance = getPlayerModel(1).appearance;
       this.fireInterval = 0.16;
       this.damageBonus = 0;
       this.levelUpTime = 0;
+      this.fireTimer = 0;
+      this.specialFireTimers = { laser: 0, homing: 0, explosive: 0 };
     }
     addExperience(amount) {
       if (!Number.isSafeInteger(amount) || amount <= 0 || !Number.isSafeInteger(this.profile.totalXp + amount)) throw new RangeError('Experience amount and total must be positive safe integers');
@@ -227,6 +268,7 @@
       const { level, tier } = this.progression;
       this.player.shipLevel = level;
       this.player.tier = tier;
+      this.player.appearance = getPlayerModel(level).appearance;
       if (level > previousLevel) {
         this.player.maxHp += Math.floor((level - 1) / 5) - Math.floor((previousLevel - 1) / 5);
         this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1);
@@ -264,8 +306,8 @@
       this.runStartXp = 0;
       this.resultProgression = null;
       const maxHp = 5 + Math.floor((this.progression.level - 1) / 5);
-      this.player = { x: WIDTH / 2, y: 596, r: 7, hp: maxHp, maxHp, invincible: 0, weaponLevel: 1, weapon: 'gun', shield: 0,
-        shipLevel: this.progression.level, tier: this.progression.tier };
+      this.player = { x: WIDTH / 2, y: 596, r: 7, hp: maxHp, maxHp, invincible: 0, weaponLevel: 1, weapon: 'gun', weapons: initialWeapons(), shield: 0,
+        shipLevel: this.progression.level, tier: this.progression.tier, appearance: getPlayerModel(this.progression.level).appearance };
       this.particles = [];
       this.upgradeOptions = [
         { id: 'spread', title: '扩散火力', description: '增加侧翼弹道 · 满级后提升伤害' },
@@ -302,6 +344,7 @@
       this.weaponEffects = [];
       this.pickups = [];
       this.fireTimer = 0;
+      this.specialFireTimers = { laser: 0, homing: 0, explosive: 0 };
       this.player.x = WIDTH / 2;
       this.player.y = 596;
       this.player.invincible = 1.6;
@@ -400,7 +443,7 @@
         if (elapsed < 0.65 || this.supportTime <= 0.8) continue;
         ally.fireTimer -= dt;
         if (ally.fireTimer <= 0) {
-          const damage = (1 + (ally.shipLevel - 1) * 0.06 + this.damageBonus) * 0.9;
+          const damage = this.getCombatStats().damage * 0.9;
           boundedPush(this.playerBullets, { x: ally.x, y: ally.y - 23, vx: 0, vy: -700, r: 3.5, damage, kind: 'gun', source: 'support' }, LIMITS.playerBullets);
           ally.fireTimer += 0.22;
         }
@@ -469,8 +512,15 @@
       this.tickSupport(dt);
       this.fireTimer -= dt;
       if (this.fireTimer <= 0) {
-        this.shoot();
-        this.fireTimer += this.fireInterval * ({ gun: 1, laser: 3, homing: 2, explosive: 2.5 }[this.player.weapon]);
+        this.shoot('gun');
+        this.fireTimer += this.weaponFireInterval('gun');
+      }
+      for (const kind of this.getActiveWeapons().slice(1)) {
+        this.specialFireTimers[kind] -= dt;
+        if (this.specialFireTimers[kind] <= 0) {
+          this.shoot(kind);
+          this.specialFireTimers[kind] += this.weaponFireInterval(kind);
+        }
       }
 
       if (this.wave < this.waveCount && this.stageTime >= this.nextWave) {
@@ -533,21 +583,18 @@
           pickup.y += (this.player.y - pickup.y) / d * 170 * dt;
         }
         if (collides({ ...this.player, r: 19 }, pickup)) {
-          pickup.collected = true;
           if (pickup.type === 'repair') this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1);
           else if (pickup.type === 'weapon') {
-            if (!WEAPONS.includes(pickup.weapon)) throw new RangeError('Unknown pickup weapon: ' + pickup.weapon);
-            this.player.weapon = pickup.weapon;
-            this.fireTimer = 0;
-            this.playerBeams = [];
-            this.updateCheckpointWeapon();
+            this.acquireWeapon(pickup.weapon);
           } else if (pickup.type === 'power') {
             if (this.player.weaponLevel < 3) this.player.weaponLevel++;
             else this.score += 150;
             this.updateCheckpointWeapon();
           } else throw new RangeError('Unknown pickup type: ' + pickup.type);
+          pickup.collected = true;
           this.burst(pickup.x, pickup.y, '#75ffe1', 12);
-          this.emit('pickup', { type: pickup.type, ...(pickup.type === 'weapon' ? { weapon: pickup.weapon } : {}) });
+          this.emit('pickup', { type: pickup.type, ...(pickup.type === 'weapon' ? { weapon: pickup.weapon,
+            rank: this.player.weapons[pickup.weapon], mounted: this.getActiveWeapons().includes(pickup.weapon) } : {}) });
         }
       }
 
@@ -593,30 +640,33 @@
       this.weaponEffects = this.weaponEffects.filter(effect => effect.life > 0);
     }
 
-    shoot() {
+    shoot(kind = 'gun') {
       if (this.state !== 'playing') return;
       const player = this.player;
-      const damage = 1 + (player.shipLevel - 1) * .06 + this.damageBonus;
-      if (player.weapon === 'laser') {
+      if (!WEAPONS.includes(kind)) throw new RangeError('Unknown player weapon: ' + kind);
+      if (!this.getActiveWeapons().includes(kind)) throw new Error('Player weapon is not mounted: ' + kind);
+      const damage = kind === 'gun' ? this.getCombatStats().damage
+        : this.baseDamage() * (1 + (player.weapons[kind] - 1) * 0.25);
+      if (kind === 'laser') {
         boundedPush(this.playerBeams, { x: player.x, y: player.y - 27, angle: -Math.PI / 2,
-          length: player.y, width: 10 + player.weaponLevel * 3, t: 0, warning: 0, duration: 0.22,
+          length: player.y, width: 10 + player.weapons.laser * 3, t: 0, warning: 0, duration: 0.22,
           damagePerSecond: damage * (24 + player.weaponLevel * 3) }, LIMITS.beams);
-      } else if (player.weapon === 'homing') {
+      } else if (kind === 'homing') {
         for (const side of [-1, 1]) boundedPush(this.playerBullets, { x: player.x + side * 14, y: player.y - 22,
           vx: side * 70, vy: -420, r: 5, damage: damage * (1.8 + player.weaponLevel * 0.2),
           kind: 'homing', turnRate: 3.4, life: 3.2 }, LIMITS.playerBullets);
-      } else if (player.weapon === 'explosive') {
+      } else if (kind === 'explosive') {
         boundedPush(this.playerBullets, { x: player.x, y: player.y - 26, vx: 0, vy: -450, r: 7,
-          damage: damage * (2 + player.weaponLevel * 0.3), blastRadius: 66 + player.weaponLevel * 6,
+          damage: damage * (2 + player.weaponLevel * 0.3), blastRadius: 66 + player.weapons.explosive * 6,
           kind: 'explosive' }, LIMITS.playerBullets);
-      } else if (player.weapon === 'gun') {
+      } else if (kind === 'gun') {
         for (const x of [-7, 7]) boundedPush(this.playerBullets, { x: player.x + x, y: player.y - 25, vx: 0, vy: -650, r: 4, damage, kind: 'gun' }, LIMITS.playerBullets);
         if (player.weaponLevel >= 2) {
           for (const side of [-1, 1]) boundedPush(this.playerBullets, { x: player.x + side * 17, y: player.y - 9, vx: side * 96, vy: -625, r: 3.5, damage: damage * 0.75, kind: 'gun' }, LIMITS.playerBullets);
         }
         if (player.weaponLevel >= 3) boundedPush(this.playerBullets, { x: player.x, y: player.y - 33, vx: 0, vy: -740, r: 5, damage: damage * 1.3, kind: 'gun' }, LIMITS.playerBullets);
-      } else throw new RangeError('Unknown player weapon: ' + player.weapon);
-      this.emit('shot', { x: player.x, y: player.y, weapon: player.weapon });
+      }
+      this.emit('shot', { x: player.x, y: player.y, weapon: kind });
     }
     steer(bullet, target, turnRate, dt) {
       const speed = Math.hypot(bullet.vx, bullet.vy);
@@ -714,14 +764,10 @@
         const y = -40 - stagger;
         const baseHp = { scout: 3, striker: 7, warship: 24, planet: 32 }[type];
         const hp = Math.round(baseHp + config.hpBoost * (type === 'warship' || type === 'planet' ? 6 : 1));
-        const skin = (config.chapter + config.mission + wave + i) % 10;
-        const appearance = type === 'planet' ? undefined : type === 'warship'
-          ? (this.stage < 3 ? { sheet: 'warships', index: (wave + this.stage) % 4, rotation: Math.PI }
-            : { sheet: 'fleet', index: skin, rotation: Math.PI / 2 })
-          : (this.stage < 3 ? { sheet: 'enemies', index: (wave + i + this.stage) % 8, rotation: Math.PI }
-            : { sheet: 'enemyVariants', index: skin, rotation: Math.PI });
+        const level = Math.min(MAX_AIRCRAFT_LEVEL, 1 + Math.floor(this.stage / 5) + (type === 'striker' ? 1 : 0));
+        const appearance = type === 'planet' ? undefined : getEnemyModel(level, type === 'warship' ? 'warship' : 'fighter').appearance;
         this.enemies.push({
-          id: ++this.id, type, x, y, baseX: x, r: { scout: 17, striker: 22, warship: 34, planet: 43 }[type],
+          id: ++this.id, type, level, x, y, baseX: x, r: { scout: 17, striker: 22, warship: 34, planet: 43 }[type],
           hp, maxHp: hp, speed: ({ scout: 87, striker: 62, warship: 42, planet: 62 }[type]) + config.speedBoost,
           appearance: appearance && Object.freeze(appearance),
           t: 0, hit: 0, phase: i * 0.7, sway: type === 'warship' ? 16 : type === 'planet' ? 0 : config.formation === 2 ? 34 : 26,
@@ -736,10 +782,9 @@
       this.bossSpawned = true;
       const config = this.stageConfig;
       const hp = config.bossHp;
-      const appearance = Object.freeze(config.bossForm === 'fighter'
-        ? { sheet: 'enemyVariants', index: config.bossSkin, rotation: Math.PI }
-        : { sheet: 'fleet', index: config.bossSkin, rotation: Math.PI / 2 });
-      const boss = { id: ++this.id, type: 'boss', form: config.bossForm, appearance, pattern: config.bossPattern,
+      const level = Math.min(MAX_AIRCRAFT_LEVEL, 1 + Math.floor(this.stage / 5));
+      const appearance = getEnemyModel(level, config.bossForm).appearance;
+      const boss = { id: ++this.id, type: 'boss', level, form: config.bossForm, appearance, pattern: config.bossPattern,
         x: WIDTH / 2, y: -70, r: 56, hp, maxHp: hp, t: 0, hit: 0, fireTimer: 2.8, volley: 0,
         weaponIndex: this.stage < 3 ? 0 : this.stage % WEAPONS.length };
       this.enemies.push(boss);

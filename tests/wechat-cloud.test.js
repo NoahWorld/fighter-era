@@ -158,7 +158,7 @@ function loadActivate(game, bridge) {
   const from = source.indexOf('function activate(id) {');
   const to = source.indexOf('\nfunction suspend()', from);
   assert.ok(from >= 0 && to > from, 'actual WeChat input handler is present');
-  const compiled = vm.runInThisContext('(function(game,cloud){ let ready=true,stopped=false,previousTime=null,rewardOffer=null,resumeAfterReward=false;\n' + source.slice(from, to) + '\nreturn activate;})', { filename: 'game.js:activate' });
+  const compiled = vm.runInThisContext('(function(game,cloud){ let ready=true,stopped=false,previousTime=null,rewardOffer=null,resumeAfterReward=false,touchSession=null; const renderer={hangar:null};\n' + source.slice(from, to) + '\nreturn activate;})', { filename: 'game.js:activate' });
   return compiled(game, bridge);
 }
 

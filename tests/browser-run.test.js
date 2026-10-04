@@ -76,6 +76,44 @@ function aliveRecord(totalXp) {
 
 function launch(game) { for (let i = 0; i < 16; i++) game.update(.2); }
 
+test('browser hangar browses all three catalogs without changing a living run or enabling selection', async () => {
+  const app = await browser(new Map([[RUN_KEY, aliveRecord(165)]]));
+  const checkpoint = app.game.getCheckpoint();
+  const saved = app.storage.get(RUN_KEY);
+  app.press('hangar');
+  for (const category of ['player', 'enemy', 'warship']) {
+    app.press('hangar:tab:' + category);
+    while (!app.ids.get('game-buttons').children.some(node => node.dataset.buttonId === 'hangar:model:20')) app.press('hangar:next');
+    app.press('hangar:model:20');
+    assert.equal(app.game.state, 'menu');
+    assert.deepEqual(app.game.getCheckpoint(), checkpoint);
+    assert.equal(app.game.progression.level, 3);
+    assert.equal(app.storage.get(RUN_KEY), saved);
+    assert.ok(!app.ids.get('game-buttons').children.some(node => ['start', 'continue', 'support', 'bomb'].includes(node.dataset.buttonId)));
+  }
+  app.key('r'); app.key('b'); app.key('p'); app.key('Enter');
+  assert.equal(app.game.state, 'menu');
+  assert.ok(app.renderer.hangar);
+  app.key('Escape');
+  assert.equal(app.renderer.hangar, null);
+  app.press('continue'); launch(app.game);
+  assert.equal(app.game.progression.level, 3);
+  assert.equal(app.game.stage, checkpoint.stage);
+  assert.equal(app.game.player.weapon, checkpoint.player.weapon);
+});
+
+test('browser catalog viewing does not unlock a selected level for a new sortie', async () => {
+  const app = await browser();
+  app.press('hangar');
+  while (!app.ids.get('game-buttons').children.some(node => node.dataset.buttonId === 'hangar:model:20')) app.press('hangar:next');
+  app.press('hangar:model:20'); app.press('hangar:close'); app.press('start');
+  assert.equal(app.game.progression.level, 1);
+  assert.equal(app.game.stage, 0);
+  assert.deepEqual(app.game.getActiveWeapons(), ['gun']);
+  assert.equal(app.game.bombCharges, 1);
+  assert.equal(app.game.supportCharges, 1);
+});
+
 test('browser entry ignores legacy permanent growth and retains only historical best scores', async () => {
   const storage = new Map([['fighter-era.profile', '{"version":1,"totalXp":700}'],
     ['fighter-era.checkpoint', '{"version":1,"stage":30}'], ['neon-wing.best-score', '2100']]);

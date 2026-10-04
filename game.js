@@ -140,7 +140,15 @@ function activate(id) {
   if (!ready || stopped) return;
   if (cloud.usingInventory) return;
   if (rewardOffer && id !== 'reward:close') return;
-  if (id === 'start' || id === 'restart') { cloud.beginRun(false); game.start(); }
+  if (renderer.hangar) {
+    if (!renderer.handleHangarAction(id)) throw new Error(`未知微信机库按钮：${id}`);
+    console.info('[Fighter Era / hangar]', { action: id, view: renderer.hangar });
+  }
+  else if (id === 'hangar' && game.state === 'menu') {
+    renderer.showHangar();
+    console.info('[Fighter Era / hangar]', { action: 'open', informationalOnly: true });
+  }
+  else if (id === 'start' || id === 'restart') { cloud.beginRun(false); game.start(); }
   else if (id === 'continue') { cloud.beginRun(true); game.continueRun(); }
   else if (id === 'pause') game.pause();
   else if (id === 'resume') { previousTime = null; game.resume(); }
@@ -290,7 +298,7 @@ async function initialize() {
         throw error;
       }
     }
-    const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'upgrade', 'levelup', 'gameover', 'victory']);
+    const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'pickup', 'upgrade', 'levelup', 'gameover', 'victory']);
     game = new Game({ profile, checkpoint, bestScore, onEvent: (name, payload) => {
       // Terminal state is emitted before progression/checkpoint. Persist the
       // cleared run before a cloud outbox failure can interrupt later events.

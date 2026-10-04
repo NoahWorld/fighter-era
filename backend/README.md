@@ -81,13 +81,14 @@ HTTPS 网关使用 `/api/*` 并剥离 `/api` 后转发，后端实际路由仍�
   version: 2, phase: "stage", stage: 0,
   seed: 123, randomState: 123, entityId: 0, totalTime: 0,
   score: 0, kills: 0, runStartXp: 0, totalXp: 0,
-  player: {hp: 5, maxHp: 5, weaponLevel: 1, weapon: "gun"},
+  player: {hp: 5, maxHp: 5, weaponLevel: 1, weapon: "gun",
+    weapons: {gun: 1, laser: 0, homing: 0, explosive: 0}},
   fireInterval: 0.16, damageBonus: 0,
   freeCharges: {bomb: 1, support: 1}
 }
 ```
 
-续关点复用共享引擎 `src/engine.js` 的 `validateCheckpoint()`，并另设 API 数值边界。`phase="stage"` 保存关卡起点，从头生成波次，不恢复敌机、敌弹、粒子和活动中的技能；`phase="upgrade"` 回到 BOSS 已击败后的升级选择。生命必须为正，最终关不能保存升级选择状态。经验、生命、分数和击杀数恢复到续关边界；关中拾取另即时保存 weapon 与 weaponLevel，不把关中经验、生命或分数写入边界。checkpoint.totalXp 不能超过当前档案经验，runStartXp 必须为零；本局使用过的免费炸弹与支援次数不会因过关或恢复补回。weapon 仅允许 gun/laser/homing/explosive；恰好包含旧三字段的 player 显式规范化为 gun，多余字段或未知武器拒绝。
+续关点复用共享引擎 `src/engine.js` 的 `validateCheckpoint()`，并另设 API 数值边界。`phase="stage"` 保存关卡起点，从头生成波次，不恢复敌机、敌弹、粒子和活动中的技能；`phase="upgrade"` 回到 BOSS 已击败后的升级选择。生命必须为正，最终关不能保存升级选择状态。经验、生命、分数和击杀数恢复到续关边界；关中拾取另即时保存 weapon、weaponLevel 与 weapons 四路等级，不把关中经验、生命或分数写入边界。checkpoint.totalXp 不能超过当前档案经验，runStartXp 必须为零；本局使用过的免费炸弹与支援次数不会因过关或恢复补回。weapon 仅允许 gun/laser/homing/explosive；旧 player 恰好三字段（hp/maxHp/weaponLevel）或四字段（另含 weapon）时显式归一化为机炮 1 级、原特殊武器 1 级，其余 0。新 player 恰好五字段，weapons 必须包含四路且每路为整数 0–5，gun 至少 1，weapon 必须已持有；未知字段、缺漏、未知类型、非法等级或未持有 weapon 拒绝。归一化结果深拷贝，不修改调用者数据；无需数据库迁移，JSON 续关通过共享验证器规范化。
 
 失败和胜利必须提交零经验及空续关点，最终胜利还必须包含第 100 关通关记录。终结对局不能再更新；新出击从第 1 关开始，或仅恢复云端已有存活续关点，使用新的 `run.id`。新对局须从第 1 关或云端存活续关的对应关卡开始，后者继承已消耗免费次数；升级界面必须有已提交的通关证据或与已存边界相同。当前协议不能区分第 1 关换编号的零经验续关与真正新出击，因此这些校验不代表完整反作弊。恢复升级选择界面时已击败的 BOSS 不再次计通关。`stageResults` 的分数和击杀数为过关时的累计值，不能超出对应对局提交值。
 

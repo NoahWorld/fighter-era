@@ -123,8 +123,8 @@
       const progression = game.progression;
       document.getElementById('pilot-level').textContent = String(progression.level).padStart(2, '0');
       document.getElementById('pilot-title').textContent = progression.title;
-      document.getElementById('pilot-xp').textContent = `${progression.xp.toLocaleString('zh-CN')} / ${progression.nextXp.toLocaleString('zh-CN')} XP`;
-      const percent = Math.min(100, progression.xp / progression.nextXp * 100);
+      document.getElementById('pilot-xp').textContent = progression.level === 20 ? 'MAX · 闯关继续提升火力' : `${progression.xp.toLocaleString('zh-CN')} / ${progression.nextXp.toLocaleString('zh-CN')} XP`;
+      const percent = progression.level === 20 ? 100 : Math.min(100, progression.xp / progression.nextXp * 100);
       const progress = document.getElementById('pilot-progress');
       progress.style.width = `${percent}%`;
       progress.parentElement.setAttribute('aria-valuenow', String(Math.round(percent)));
@@ -187,7 +187,7 @@
     }
     soundButton.addEventListener('click', () => { audio.enabled = !audio.enabled; updateSoundButton(); void audio.unlock(); });
     updateSoundButton();
-    const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'weapon', 'upgrade', 'levelup', 'gameover', 'victory']);
+    const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'pickup', 'upgrade', 'levelup', 'gameover', 'victory']);
     game = new Game({ profile, checkpoint, bestScore, onEvent: (name, payload) => {
       const terminalState = name === 'state' && ['ejecting', 'gameover', 'victory'].includes(payload.state);
       if (terminalState) { saveRun(); saveBestScore(); }
@@ -258,7 +258,15 @@
       if (rewardOffer && id !== 'reward:close') return;
       if (id !== 'support' && id !== 'bomb') resetInput();
       void audio.unlock();
-      if (id === 'start' || id === 'restart') game.start();
+      if (renderer.hangar) {
+        if (!renderer.handleHangarAction(id)) throw new Error(`未知机库按钮：${id}`);
+        console.info('[Fighter Era / hangar]', { action: id, view: renderer.hangar });
+      }
+      else if (id === 'hangar' && game.state === 'menu') {
+        renderer.showHangar();
+        console.info('[Fighter Era / hangar]', { action: 'open', informationalOnly: true });
+      }
+      else if (id === 'start' || id === 'restart') game.start();
       else if (id === 'continue') game.continueRun();
       else if (id === 'pause') game.pause();
       else if (id === 'resume') { lastFrame = null; game.resume(); }
@@ -366,6 +374,11 @@
     window.addEventListener('keydown', event => {
       if (stopped || event.metaKey || event.ctrlKey || event.altKey) return;
       const key = event.key.toLowerCase();
+      if (renderer.hangar) {
+        if (['escape', 'p', 'r', 'b'].includes(key) || movementKeys.has(key)) event.preventDefault();
+        if (key === 'escape' && !event.repeat) activate('hangar:close');
+        return;
+      }
       if (rewardOffer) {
         if (['escape', 'p', 'r', 'b'].includes(key) || movementKeys.has(key)) event.preventDefault();
         if (key === 'escape' && !event.repeat) activate('reward:close');

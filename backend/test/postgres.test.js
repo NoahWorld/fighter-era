@@ -222,23 +222,67 @@ test('weapon checkpoints use the engine contract and normalize exact legacy v2 s
     const checkpoint = seedCheckpoint(); checkpoint.player.weapon = weapon;
     const body = saveBody(0, { checkpoint });
     const result = await store.save(user.user.id, body);
-    assert.equal(result.account.checkpoint.player.weapon, weapon);
-    assert.equal((await pool.query('SELECT checkpoint FROM player_saves WHERE user_id=$1', [user.user.id])).rows[0].checkpoint.player.weapon, weapon);
+    const expectedWeapons = { gun: 1, laser: 0, homing: 0, explosive: 0 }; expectedWeapons[weapon] = 1;
+    const expectedPlayer = { ...seedCheckpoint().player, weapon, weapons: expectedWeapons };
+    assert.deepEqual(result.account.checkpoint.player, expectedPlayer);
+    assert.deepEqual((await pool.query('SELECT checkpoint FROM player_saves WHERE user_id=$1', [user.user.id])).rows[0].checkpoint.player, expectedPlayer);
+    assert.equal(Object.hasOwn(checkpoint.player, 'weapons'), false, 'legacy save normalization cannot mutate request identity');
+    assert.deepEqual(await store.save(user.user.id, body), result);
+    const { account: importingUser } = await account();
+    const importBody = { mutationId: randomUUID(), profile: { version: 2, totalXp: 10 }, bestScore: 100, checkpoint };
+    const importedWeapon = await store.importSave(importingUser.user.id, importBody);
+    assert.deepEqual(importedWeapon.account.checkpoint.player, expectedPlayer);
+    assert.deepEqual((await pool.query('SELECT checkpoint FROM player_saves WHERE user_id=$1', [importingUser.user.id])).rows[0].checkpoint.player, expectedPlayer);
+    assert.deepEqual(await store.importSave(importingUser.user.id, importBody), importedWeapon);
   }
   const { account: user } = await account();
   const legacy = { mutationId: randomUUID(), profile: { version: 2, totalXp: 10 }, bestScore: 100, checkpoint: seedCheckpoint() };
   const imported = await store.importSave(user.user.id, legacy);
-  assert.equal(imported.account.checkpoint.player.weapon, 'gun');
+  const gunPlayer = { ...seedCheckpoint().player, weapon: 'gun', weapons: { gun: 1, laser: 0, homing: 0, explosive: 0 } };
+  assert.deepEqual(imported.account.checkpoint.player, gunPlayer);
+  assert.deepEqual((await pool.query('SELECT checkpoint FROM player_saves WHERE user_id=$1', [user.user.id])).rows[0].checkpoint.player, gunPlayer);
   assert.equal(Object.hasOwn(legacy.checkpoint.player, 'weapon'), false, 'normalizing must not change the request used for idempotency');
   assert.deepEqual(await store.importSave(user.user.id, legacy), imported);
   await assert.rejects(store.importSave(user.user.id, { ...legacy, checkpoint: imported.account.checkpoint }), error => error.code === 'MUTATION_REUSED');
   // Direct old v2 database records are normalized on read as well, not just at HTTP input.
-  await pool.query('UPDATE player_saves SET checkpoint=$2 WHERE user_id=$1', [user.user.id, seedCheckpoint()]);
-  assert.equal((await store.getAccount(user.user.id)).checkpoint.player.weapon, 'gun');
-  for (const player of [{ ...seedCheckpoint().player, weapon: 'unknown' }, { ...seedCheckpoint().player, weapon: 'gun', ammo: 5 }]) {
+  for (const weapon of [undefined, 'gun', 'laser', 'homing', 'explosive']) {
+    const oldCheckpoint = seedCheckpoint();
+    if (weapon !== undefined) oldCheckpoint.player.weapon = weapon;
+    await pool.query('UPDATE player_saves SET checkpoint=$2 WHERE user_id=$1', [user.user.id, oldCheckpoint]);
+    const expectedWeapons = { gun: 1, laser: 0, homing: 0, explosive: 0 }; expectedWeapons[weapon || 'gun'] = 1;
+    assert.deepEqual((await store.getAccount(user.user.id)).checkpoint.player,
+      { ...seedCheckpoint().player, weapon: weapon || 'gun', weapons: expectedWeapons });
+  }
+  for (const player of [{ ...seedCheckpoint().player, weapon: 'unknown' }, { ...seedCheckpoint().player, weapon: 'gun', ammo: 5 },
+    { ...gunPlayer, weapons: { ...gunPlayer.weapons, laser: 6 } },
+    { ...gunPlayer, weapon: 'laser' },
+    { ...gunPlayer, weapons: { gun: 1, laser: 1, homing: 0 } }
+  ]) {
     await assert.rejects(store.save(user.user.id, saveBody(1, { checkpoint: { ...seedCheckpoint(), player } })), error => error.code === 'INVALID_CHECKPOINT');
   }
   assert.equal((await store.getAccount(user.user.id)).revision, 1);
+});
+
+test('HTTP save and import persist stacked loadouts through PostgreSQL without granting inventory', { skip }, async () => {
+  const player = { hp: 5, maxHp: 6, weaponLevel: 3, weapon: 'homing', weapons: { gun: 2, laser: 3, homing: 4, explosive: 5 } };
+  for (const operation of ['save', 'import']) {
+    const login = await account();
+    const checkpoint = { ...seedCheckpoint(), player: structuredClone(player) };
+    const payload = operation === 'save' ? saveBody(0, { checkpoint })
+      : { mutationId: randomUUID(), profile: { version: 2, totalXp: 10 }, bestScore: 100, checkpoint };
+    const headers = { authorization: 'Bearer ' + login.token };
+    const request = { method: operation === 'save' ? 'PUT' : 'POST', url: '/v1/me/' + operation, headers, payload };
+    const response = await app.inject(request);
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json().account.checkpoint.player, player);
+    assert.deepEqual(response.json().account.inventory, { bomb: 0, support: 0 });
+    const stored = (await pool.query('SELECT checkpoint FROM player_saves WHERE user_id=$1', [login.account.user.id])).rows[0].checkpoint;
+    assert.deepEqual(stored.player, player);
+    const restored = await app.inject({ method: 'GET', url: '/v1/me', headers });
+    assert.equal(restored.statusCode, 200);
+    assert.deepEqual(restored.json().checkpoint.player, player);
+    assert.deepEqual((await app.inject(request)).json(), response.json(), 'retry cannot alter stored levels or award inventory');
+  }
 });
 
 test('free charges persist across stages and cannot refill by switching back to an old run ID', { skip }, async () => {

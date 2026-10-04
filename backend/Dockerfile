@@ -8,6 +8,7 @@ COPY --chown=node:node backend/src/ ./src/
 COPY --chown=node:node backend/migrations/ ./migrations/
 COPY --chown=node:node backend/test/ ./test/
 COPY --chown=node:node src/engine.js /app/src/engine.js
+COPY --chown=node:node src/aircraft.js /app/src/aircraft.js
 USER node
 EXPOSE 4317
 CMD ["node", "src/server.js"]

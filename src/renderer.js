@@ -1,8 +1,10 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.ShooterRenderer = factory();
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./aircraft.js'));
+  else root.ShooterRenderer = factory(root.ShooterAircraft);
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Aircraft) {
   'use strict';
+
+  if (!Aircraft || typeof Aircraft.getPlayerModel !== 'function') throw new Error('Renderer requires the shared aircraft catalog');
 
   const W = 405;
   const H = 720;
@@ -14,18 +16,9 @@
   const clamp01 = value => Math.max(0, Math.min(1, value));
   const smooth = value => { const t = clamp01(value); return t * t * (3 - 2 * t); };
   const FONT = '"PingFang SC", "Microsoft YaHei", -apple-system, sans-serif';
-  const MODELS = [
-    { level: 1, title: '游隼', code: 'FALCON', edge: '#a8dafa' },
-    { level: 3, title: '破晓', code: 'DAWN', edge: '#e8c182' },
-    { level: 6, title: '雷霆', code: 'THUNDER', edge: '#8abaff' },
-    { level: 10, title: '星曜', code: 'NOVA', edge: '#f9dc99' },
-  ];
-  const WEAPONS = Object.freeze({
-    gun: { label: '机炮', color: '#e8c182', sprite: 'round' },
-    laser: { label: '光柱', color: '#8be8ff', sprite: 'beam' },
-    homing: { label: '追踪弹', color: '#d5afff', sprite: 'missile' },
-    explosive: { label: '爆炸弹', color: '#ffbf81', sprite: 'rocket' },
-  });
+  const WEAPONS = Aircraft.WEAPON_INFO;
+  const HANGAR_CATEGORIES = Object.freeze({ player: '我方战机', enemy: '敌方战机', warship: '敌方战舰' });
+  const HANGAR_PAGE_SIZE = 4;
   const LANDSCAPES = Object.freeze(['航道光带', '星环边界', '陨石长河', '轨道遗迹', '星港网格',
     '双星回廊', '星云裂隙', '螺旋星系', '冰晶星海', '恒星风暴']);
   const SECTORS = [
@@ -183,6 +176,7 @@
         });
       });
       this.rewardOffer = null;
+      this.hangar = null;
     }
 
     text(value, x, y, size, color, weight, align) {
@@ -236,8 +230,115 @@
     }
 
     getButtons(game) {
+      if (this.hangar) return this.hangarButtons();
       if (this.rewardOffer) return this.rewardButtons();
       return this.getSceneButtons(game);
+    }
+
+    showHangar() { this.hangar = { category: 'player', page: 0, selectedLevel: 1 }; }
+
+    hideHangar() { this.hangar = null; }
+
+    hangarModels() {
+      if (!this.hangar || !Object.prototype.hasOwnProperty.call(HANGAR_CATEGORIES, this.hangar.category)
+        || !Number.isInteger(this.hangar.page) || this.hangar.page < 0 || this.hangar.page >= 5
+        || !Number.isInteger(this.hangar.selectedLevel) || this.hangar.selectedLevel < 1 || this.hangar.selectedLevel > Aircraft.MAX_AIRCRAFT_LEVEL) {
+        throw new RangeError('Invalid aircraft catalog view state');
+      }
+      return this.hangar.category === 'player' ? Aircraft.PLAYER_MODELS
+        : this.hangar.category === 'enemy' ? Aircraft.ENEMY_MODELS.fighters : Aircraft.ENEMY_MODELS.warships;
+    }
+
+    handleHangarAction(id) {
+      if (!this.hangar) return false;
+      if (typeof id !== 'string') throw new TypeError('Aircraft catalog action must be a string');
+      const models = this.hangarModels();
+      if (id === 'hangar:close') { this.hideHangar(); return true; }
+      if (id.startsWith('hangar:tab:')) {
+        const category = id.slice('hangar:tab:'.length);
+        if (!Object.prototype.hasOwnProperty.call(HANGAR_CATEGORIES, category)) throw new RangeError('Unknown aircraft catalog category: ' + category);
+        this.hangar = { category, page: 0, selectedLevel: 1 };
+        return true;
+      }
+      if (id === 'hangar:prev' || id === 'hangar:next') {
+        const page = this.hangar.page + (id === 'hangar:next' ? 1 : -1);
+        if (page >= 0 && page < models.length / HANGAR_PAGE_SIZE) {
+          this.hangar.page = page; this.hangar.selectedLevel = page * HANGAR_PAGE_SIZE + 1;
+        }
+        return true;
+      }
+      if (id.startsWith('hangar:model:')) {
+        const level = Number(id.slice('hangar:model:'.length));
+        Aircraft.getPlayerModel(level);
+        this.hangar.selectedLevel = level; this.hangar.page = Math.floor((level - 1) / HANGAR_PAGE_SIZE);
+        return true;
+      }
+      return false;
+    }
+
+    hangarButtons() {
+      const models = this.hangarModels();
+      return [
+        ...Object.entries(HANGAR_CATEGORIES).map(([category, label], index) => ({
+          id: 'hangar:tab:' + category, label, x: 24 + index * 121, y: 112, w: 115, h: 38,
+          active: this.hangar.category === category, disabled: false,
+        })),
+        ...models.slice(this.hangar.page * HANGAR_PAGE_SIZE, (this.hangar.page + 1) * HANGAR_PAGE_SIZE).map((model, index) => ({
+          id: 'hangar:model:' + model.level, label: 'Lv.' + model.level + ' ' + model.title,
+          x: 24 + (index % 2) * 185, y: 166 + Math.floor(index / 2) * 154, w: 172, h: 142,
+          active: model.level === this.hangar.selectedLevel, disabled: false,
+        })),
+        { id: 'hangar:prev', label: '上一页', x: 24, y: 481, w: 99, h: 34, disabled: this.hangar.page === 0 },
+        { id: 'hangar:next', label: '下一页', x: 282, y: 481, w: 99, h: 34, disabled: this.hangar.page === 4 },
+        { id: 'hangar:close', label: '返回首页', x: 24, y: 674, w: 357, h: 40, disabled: false },
+      ];
+    }
+
+    hangarThumbnail(model, x, y, extent, time) {
+      const frame = this.appearanceFrame(model.appearance);
+      const moduleScale = model.appearance.variant > 0 ? 1.65 : 1;
+      const width = frame.w * Math.min(extent / (frame.w * moduleScale), extent / (frame.h * moduleScale));
+      this.ctx.save(); this.ctx.translate(x, y);
+      this.airframe(model.appearance, width, time);
+      this.ctx.restore();
+    }
+
+    hangarScene(time) {
+      const models = this.hangarModels();
+      const view = this.hangar;
+      const hostile = view.category !== 'player';
+      const accent = hostile ? '#ffa18c' : C.gold;
+      this.ctx.fillStyle = 'rgba(4,11,24,0.94)'; this.ctx.fillRect(0, 0, W, H);
+      this.text('战机图鉴', 24, 38, 25, C.text, '600');
+      this.text('A I R C R A F T   A R C H I V E', 24, 65, 8, accent, '500');
+      this.text('外形与挂载预览 · 战机在本局战斗中自动成长', 24, 91, 10, '#8da2bd');
+      const buttons = this.hangarButtons();
+      for (const button of buttons.filter(item => item.id.startsWith('hangar:tab:'))) {
+        this.box(button.x, button.y, button.w, button.h, button.active ? '#273348' : '#111e31', button.active ? accent : '#35445c', 8);
+        this.text(button.label, button.x + button.w / 2, button.y + button.h / 2, 11, button.active ? C.text : '#8399b5', '500', 'center');
+      }
+      for (const button of buttons.filter(item => item.id.startsWith('hangar:model:'))) {
+        const model = models[Number(button.id.slice('hangar:model:'.length)) - 1];
+        this.box(button.x, button.y, button.w, button.h, button.active ? '#1b2c42' : '#0e1a2a', button.active ? accent : '#2b3b52', 10);
+        this.text(model.code, button.x + 11, button.y + 16, 7, '#7b92ad', '500');
+        this.hangarThumbnail(model, button.x + button.w / 2, button.y + 65, 82, time);
+        this.text(button.label, button.x + button.w / 2, button.y + 112, 11, button.active ? '#f3d9ad' : '#c7d6e8', '500', 'center');
+        this.text(model.mountSlots + ' 个挂载位', button.x + button.w / 2, button.y + 130, 8, '#8197b3', '400', 'center');
+      }
+      for (const button of buttons.filter(item => ['hangar:prev', 'hangar:next'].includes(item.id))) {
+        this.box(button.x, button.y, button.w, button.h, '#132136', '#30425a', 7);
+        this.text(button.label, button.x + button.w / 2, button.y + button.h / 2, 10, button.disabled ? '#3e526d' : '#b4c7e0', '500', 'center');
+      }
+      this.text((view.page + 1) + ' / 5', W / 2, 498, 11, '#c7d4e6', '500', 'center');
+      const model = models[view.selectedLevel - 1];
+      this.box(24, 530, 357, 128, '#122238', '#35465f', 10);
+      this.hangarThumbnail(model, 76, 590, 83, time);
+      this.text('Lv.' + model.level + '  ' + model.title, 129, 551, 16, C.text, '600');
+      this.text(model.code + ' · ' + model.mountSlots + ' 个挂载位', 129, 575, 10, accent, '500');
+      this.text('可挂载：' + model.weaponTypes.map(type => WEAPONS[type].label).join(' / '), 129, 599, 8, '#a9bbd3');
+      this.text(model.level === 1 ? '升级到 Lv.2，开启特殊武器挂载' : '机炮常驻 · 特殊武器并行作战', 129, 621, 9, '#829ab7');
+      this.text('只查看外形 · 不影响出击战机', 129, 642, 8, '#6e87a5');
+      this.button(buttons.find(item => item.id === 'hangar:close'), true);
     }
 
     showRewardOffer(item) {
@@ -258,15 +359,19 @@
     getSceneButtons(game) {
       switch (game.state) {
         case 'menu': return game.savedCheckpoint ? [
+          { id: 'hangar', label: '战机图鉴 · 20 级形态', x: 34, y: 463, w: 337, h: 45, disabled: false },
           { id: 'continue', label: game.savedCheckpoint.phase === 'upgrade' ? '继续选择过关补给' : '继续第 ' + (game.savedCheckpoint.stage + 1) + ' 关', x: 34, y: 558, w: 337, h: 45, disabled: false },
           { id: 'start', label: '驾驶战机重新出击', x: 34, y: 614, w: 337, h: 49, disabled: false },
-        ] : [{ id: 'start', label: '驾驶战机出击', x: 34, y: 567, w: 337, h: 57, disabled: false }];
+        ] : [
+          { id: 'hangar', label: '战机图鉴 · 20 级形态', x: 34, y: 463, w: 337, h: 45, disabled: false },
+          { id: 'start', label: '驾驶战机出击', x: 34, y: 567, w: 337, h: 57, disabled: false },
+        ];
         case 'launching':
         case 'ejecting': return [this.pauseButton()];
         case 'playing': return [this.pauseButton(), ...this.abilityButtons(game)];
         case 'paused': return [
           { id: 'resume', label: '继续出击', x: 53, y: 403, w: 299, h: 54, disabled: false },
-          { id: 'home', label: '返回机库', x: 53, y: 470, w: 299, h: 47, disabled: false },
+          { id: 'home', label: '返回首页', x: 53, y: 470, w: 299, h: 47, disabled: false },
         ];
         case 'upgrade': return game.upgradeOptions.map((option, i) => ({
           id: 'upgrade:' + option.id, label: option.title, x: 29, y: 283 + i * 86, w: 347, h: 74, disabled: false,
@@ -274,11 +379,11 @@
         case 'gameover': return [
           { id: 'revive', label: '原地复活 · 广告 / 充值', x: 53, y: 454, w: 299, h: 41, disabled: false },
           { id: 'restart', label: '重新出击', x: 53, y: 508, w: 299, h: 48, disabled: false },
-          { id: 'home', label: '返回机库', x: 53, y: 569, w: 299, h: 43, disabled: false },
+          { id: 'home', label: '返回首页', x: 53, y: 569, w: 299, h: 43, disabled: false },
         ];
         case 'victory': return [
           { id: 'restart', label: game.state === 'victory' ? '再次出击' : '重新出击', x: 53, y: 458, w: 299, h: 54, disabled: false },
-          { id: 'home', label: '返回机库', x: 53, y: 525, w: 299, h: 47, disabled: false },
+          { id: 'home', label: '返回首页', x: 53, y: 525, w: 299, h: 47, disabled: false },
         ];
         default: throw new Error('Unknown render state: ' + game.state);
       }
@@ -291,6 +396,7 @@
       const scene = game.state === 'paused' ? game.pausedFrom : game.state;
       ctx.save();
       this.background(game, this.backgroundTime(game, timeSeconds));
+      if (this.hangar) { this.hangarScene(timeSeconds); ctx.restore(); return; }
       if (game.state === 'menu') this.menu(game, timeSeconds);
       else if (scene === 'launching' || scene === 'ejecting') {
         if (scene === 'launching') this.launchScene(game);
@@ -369,8 +475,9 @@
       const ctx = this.ctx;
       const lift = smooth((t - 1.8) / (duration - 1.8));
       const deckFade = 1 - smooth((lift - 0.36) / 0.64);
-      const appearance = Math.min(game.progression.level, 10) - 1;
-      const frame = this.assets.frames.player[appearance];
+      const model = Aircraft.getPlayerModel(game.progression.level);
+      const appearance = model.appearance.index;
+      const frame = this.appearanceFrame(model.appearance);
       const localWidth = 75 + appearance * 0.65;
       const localHeight = localWidth * frame.h / frame.w;
       const cockpitY = -localHeight * (0.15 - appearance * 0.006);
@@ -458,12 +565,11 @@
       const ctx = this.ctx;
       const p = game.player;
       ctx.fillStyle = 'rgba(3,10,21,0.28)'; ctx.fillRect(0, 0, W, H);
-      const appearance = Math.min((game.resultProgression || game.progression).level, 10) - 1;
-      const frame = this.assets.frames.player[appearance];
+      const model = Aircraft.getPlayerModel((game.resultProgression || game.progression).level);
       const wreckFade = 1 - smooth((t - 0.7) / 1.1);
       if (wreckFade > 0) {
         ctx.save(); ctx.translate(p.x + Math.sin(t * 6) * 2, p.y + t * 28); ctx.rotate(t * 0.2); ctx.globalAlpha = wreckFade;
-        this.sprite('player', frame, (75 + appearance * 0.65) * 0.8);
+        this.airframe(model.appearance, (75 + model.appearance.index * 0.65) * 0.8, t);
         this.glow(0, 2, 29, 'rgba(255,124,62,' + Math.max(0, 0.46 - t * 0.23) + ')');
         this.line(-17, -2, 9, 8, '#ffb57b', 1.5);
         this.line(9, 8, 13, 23, '#6e392f', 2);
@@ -778,21 +884,141 @@
         -width / 2, -height / 2, width, height);
     }
 
-    aircraft(x, y, scale, time, shield, alpha, level) {
-      if (!Number.isSafeInteger(level) || level < 1) throw new RangeError('Aircraft level must be a positive safe integer');
+    appearanceFrame(appearance) {
+      if (!appearance || !['player', 'enemies', 'warships', 'enemyVariants', 'fleet'].includes(appearance.sheet)
+        || !Number.isInteger(appearance.index) || !Number.isFinite(appearance.rotation) || !Number.isInteger(appearance.variant)) {
+        throw new TypeError('Invalid aircraft appearance descriptor');
+      }
+      const maxVariant = appearance.sheet === 'player' ? 10 : appearance.sheet === 'fleet' ? 6 : 2;
+      if (appearance.variant < 0 || appearance.variant > maxVariant) throw new RangeError('Unknown aircraft silhouette module: ' + appearance.sheet + '/' + appearance.variant);
+      const frame = this.assets.frames[appearance.sheet][appearance.index];
+      if (!frame) throw new RangeError('Unknown aircraft sprite: ' + appearance.sheet + '[' + appearance.index + ']');
+      return frame;
+    }
+
+    airframe(appearance, width, time) {
+      const frame = this.appearanceFrame(appearance);
+      if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(time)) throw new RangeError('Aircraft drawing requires a positive width and finite clock');
       const ctx = this.ctx;
-      const appearance = Math.min(level, 10) - 1;
-      const frame = this.assets.frames.player[appearance];
-      const width = 75 + appearance * 0.65;
       const height = width * frame.h / frame.w;
+      const sideways = appearance.sheet === 'fleet';
+      const hostile = appearance.sheet !== 'player';
+      ctx.save(); ctx.rotate(appearance.rotation);
+      if (appearance.variant > 0) {
+        ctx.save();
+        if (sideways) ctx.rotate(Math.PI / 2);
+        ctx.scale((sideways ? height : width) / 100, (sideways ? width : height) / 125);
+        this.airframeModules(appearance.sheet, appearance.variant);
+        ctx.restore();
+      }
+      this.glow(sideways ? -width * 0.37 : 0, sideways ? 0 : height * 0.37,
+        Math.min(18, width * 0.14), hostile ? 'rgba(255,85,31,0.19)' : 'rgba(40,172,255,0.25)');
+      this.sprite(appearance.sheet, frame, width);
+      ctx.restore();
+    }
+
+    airframeModules(sheet, variant) {
+      // Small geometric attachments reuse decoded sprites. They change the
+      // outline at all scales and use the same path in the archive and battle.
+      const ctx = this.ctx;
+      const hostile = sheet !== 'player';
+      const metal = hostile ? '#343840' : '#566777';
+      const dark = hostile ? '#171d28' : '#1d2a38';
+      const face = hostile ? '#51535b' : '#8c9cac';
+      const edge = hostile ? '#87767b' : '#b1c1d0';
+      const accent = hostile ? '#ff5b43' : '#54d5ff';
+      const kind = sheet === 'fleet' ? [0, 3, 5, 4, 9, 6, 10][variant]
+        : hostile ? (variant === 1 ? 5 : 8) : variant;
+      ctx.scale(0.9, 0.93);
+      ctx.lineWidth = 0.8;
+      const wings = points => {
+        for (const side of [-1, 1]) {
+          ctx.beginPath();
+          points.forEach(([x, y], index) => { if (index === 0) ctx.moveTo(x * side, y); else ctx.lineTo(x * side, y); });
+          ctx.closePath(); ctx.fillStyle = metal; ctx.fill(); ctx.strokeStyle = edge; ctx.stroke();
+          const start = points[0], end = points[1], tip = points[2], rear = points[points.length - 1];
+          const hingeX = (start[0] + rear[0]) / 2, hingeY = (start[1] + rear[1]) / 2;
+          // Separate flat metal faces and recessed seams match the sprite's
+          // panel language without per-frame textures or blurred shading.
+          ctx.beginPath(); ctx.moveTo(start[0] * side, start[1]); ctx.lineTo(end[0] * side, end[1]);
+          ctx.lineTo(hingeX * side, hingeY); ctx.closePath(); ctx.fillStyle = face; ctx.fill();
+          ctx.beginPath(); ctx.moveTo(hingeX * side, hingeY); ctx.lineTo(tip[0] * side, tip[1]);
+          ctx.lineTo(rear[0] * side, rear[1]); ctx.closePath(); ctx.fillStyle = dark; ctx.fill();
+          this.line(hingeX * side, hingeY, tip[0] * side, tip[1], '#0e1824', 1);
+          this.line(start[0] * side, start[1], rear[0] * side, rear[1], dark, 2);
+          this.line((start[0] + 3) * side, start[1] + 2, (end[0] - 4) * side, end[1] + 3, accent, 1.1);
+          const insetX = (end[0] * 0.58 + hingeX * 0.42) * side;
+          const insetY = end[1] * 0.58 + hingeY * 0.42;
+          this.line(insetX, insetY - 2, insetX - side * 7, insetY + 2, dark, 1.1);
+          this.line(insetX, insetY + 2, insetX - side * 7, insetY + 6, dark, 1.1);
+        }
+      };
+      const pod = (x, y, w, h) => {
+        polygon(ctx, [[x, y - h / 2], [x + w / 2, y - h / 2 + 8], [x + w / 2, y + h / 2 - 5],
+          [x, y + h / 2], [x - w / 2, y + h / 2 - 5], [x - w / 2, y - h / 2 + 8]], dark, edge);
+        polygon(ctx, [[x - w * 0.32, y - h / 2 + 9], [x, y - h / 2 + 4],
+          [x, y + h / 2 - 9], [x - w * 0.32, y + h / 2 - 13]], metal);
+        this.line(x - w * 0.32, y - h / 2 + 10, x - w * 0.32, y + h / 2 - 14, face, 0.7);
+        this.line(x, y - h / 2 + 9, x, y + h / 2 - 8, accent, 1.2);
+        this.line(x - w * 0.4, y + h * 0.15, x + w * 0.4, y + h * 0.15, '#0e1824', 1.2);
+        polygon(ctx, [[x - w * 0.23, y + h / 2 - 3], [x, y + h / 2 + 7], [x + w * 0.23, y + h / 2 - 3]], accent);
+      };
+      switch (kind) {
+        case 1: // Forward canards make a wide, pointed shoulder.
+          wings([[15, -30], [66, -53], [55, -23], [22, -6]]);
+          break;
+        case 2: // Two long wingtip fins.
+          wings([[27, -6], [65, -28], [57, 51], [36, 30]]);
+          for (const side of [-1, 1]) pod(side * 57, -13, 9, 56);
+          break;
+        case 3: // Four separated propulsion pods.
+          wings([[20, 8], [65, 17], [63, 35], [16, 27]]);
+          for (const side of [-1, 1]) { pod(side * 49, 20, 15, 57); pod(side * 67, 29, 10, 38); }
+          break;
+        case 4: // An orbital collar extends beyond both wings.
+          ctx.save(); ctx.scale(1, 0.62);
+          this.circle(0, 5, 66, null, dark, 9);
+          this.circle(0, 5, 66, null, edge, 1);
+          this.circle(0, 5, 61, null, accent, 1.7); ctx.restore();
+          wings([[20, 0], [64, -12], [64, 15], [19, 23]]);
+          break;
+        case 5: // Twin lances project well ahead of the main wings.
+          wings([[16, -20], [52, -63], [61, 29], [35, 43]]);
+          for (const side of [-1, 1]) pod(side * 53, -21, 12, 74);
+          break;
+        case 6: // Rear engine banks with a broad horizontal tail.
+          wings([[19, 16], [72, 30], [63, 58], [15, 39]]);
+          for (const side of [-1, 1]) { pod(side * 39, 46, 17, 36); pod(side * 59, 47, 14, 29); }
+          break;
+        case 7: // Three stepped blades on each wing.
+          wings([[22, -23], [66, -38], [51, -8], [71, -1], [52, 18], [66, 38], [24, 30]]);
+          break;
+        case 8: // A large delta wing and two rear stabilisers.
+          wings([[12, -51], [74, 42], [46, 32], [35, 58], [18, 26]]);
+          for (const side of [-1, 1]) this.line(side * 34, 4, side * 60, 33, accent, 2);
+          break;
+        case 9: // Long parallel booms leave a recognisable open middle.
+          wings([[22, -9], [59, -19], [59, 28], [22, 31]]);
+          for (const side of [-1, 1]) pod(side * 58, 7, 15, 103);
+          break;
+        case 10: // Swept crescent wings with four forward and rear pods.
+          wings([[15, -26], [51, -67], [76, -43], [64, -5], [76, 29], [45, 55], [24, 31]]);
+          for (const side of [-1, 1]) { pod(side * 57, -30, 12, 33); pod(side * 48, 41, 15, 37); }
+          break;
+        default: throw new RangeError('No aircraft silhouette geometry for ' + sheet + '/' + variant);
+      }
+    }
+
+    aircraft(x, y, scale, time, shield, alpha, level) {
+      const model = Aircraft.getPlayerModel(level);
+      const ctx = this.ctx;
+      const width = 75 + model.appearance.index * 0.65;
       ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); ctx.globalAlpha = alpha;
       if (shield) {
         this.glow(0, 0, width * 0.69, 'rgba(98,192,255,0.12)');
         this.circle(0, 0, width * 0.62 + Math.sin(time * 4) * 1.5, null, 'rgba(127,200,255,0.58)', 0.9);
       }
-      const engineXs = appearance < 2 ? [0] : [-width * 0.12, width * 0.12];
-      for (const ex of engineXs) this.glow(ex, height * 0.38, 12 + Math.sin(time * 26) * 1.3, 'rgba(40,172,255,0.26)');
-      this.sprite('player', frame, width);
+      this.airframe(model.appearance, width, time);
       ctx.restore();
     }
 
@@ -803,7 +1029,7 @@
       if (!['scout', 'striker', 'warship', 'boss'].includes(enemy.type)) throw new Error('No sprite assigned to enemy type: ' + enemy.type);
       const appearance = enemy.appearance;
       if (!appearance || !['enemies', 'warships', 'enemyVariants', 'fleet'].includes(appearance.sheet)
-        || !Number.isInteger(appearance.index) || !Number.isFinite(appearance.rotation)) {
+        || !Number.isInteger(appearance.index) || !Number.isFinite(appearance.rotation) || !Number.isInteger(appearance.variant)) {
         throw new Error('Invalid enemy appearance: type=' + enemy.type + '; id=' + enemy.id);
       }
       const sheet = appearance.sheet;
@@ -814,10 +1040,9 @@
       const width = frame.w * ratio;
       const height = frame.h * ratio;
       const sideways = sheet === 'fleet';
-      const screenHeight = sideways ? width : height;
-      ctx.save(); ctx.translate(enemy.x, enemy.y); ctx.rotate(appearance.rotation);
-      this.glow(sideways ? -width * 0.37 : 0, sideways ? 0 : height * 0.37, large ? 15 : 8, 'rgba(255,85,31,0.19)');
-      this.sprite(sheet, frame, width);
+      const screenHeight = (sideways ? width : height) * (appearance.variant > 0 ? 1.4 : 1);
+      ctx.save(); ctx.translate(enemy.x, enemy.y);
+      this.airframe(appearance, width, time);
       if (enemy.hit > 0) {
         this.glow(0, 0, enemy.r * 0.73, 'rgba(255,240,201,0.5)');
         this.line(-8, -4, 7, 6, '#fff0d0', 1.1);
@@ -1065,6 +1290,7 @@
     menu(game, time) {
       const ctx = this.ctx;
       const p = game.progression;
+      const model = Aircraft.getPlayerModel(p.level);
       polygon(ctx, [[29, 28], [36, 42], [29, 38], [22, 42]], C.gold);
       this.text('F / E', 46, 35, 11, '#c9d3e4', '600');
       this.text('ORBITAL FIGHTER COMMAND', 376, 35, 7, '#6f85a3', '500', 'right');
@@ -1078,28 +1304,29 @@
       this.circle(0, 0, 106, null, 'rgba(115,153,194,0.07)', 1); ctx.restore();
       this.aircraft(W / 2, 298 + Math.sin(time * 1.5) * 3, 2.15, time, false, 1, p.level);
       this.line(41, 284, 77, 284, '#47566d', 0.7);
-      this.text('MARK ' + String(Math.min(p.level, 10)).padStart(2, '0'), 37, 269, 8, '#9eaeC3', '500');
+      this.text('MARK ' + String(p.level).padStart(2, '0'), 37, 269, 8, '#9eaeC3', '500');
       this.text(p.level < 3 ? '离子推进引擎' : '双核离子引擎', 365, 359, 8, '#758cab', '400', 'right');
       this.line(320, 343, 365, 343, '#47566d', 0.7);
       this.text(p.title, W / 2, 410, 20, '#e1e7ef', '500', 'center');
-      this.text('LV. ' + p.level + '  /  ' + MODELS[p.tier - 1].code, W / 2, 435, 9, C.gold, '500', 'center');
-      MODELS.forEach((model, i) => {
-        const x = 29 + i * 89;
-        const active = p.tier === i + 1;
-        const unlocked = p.level >= model.level;
-        this.box(x, 463, 80, 45, active ? 'rgba(117,94,56,0.19)' : 'rgba(15,27,46,0.73)', active ? '#9c8057' : '#283a52', 7);
-        this.text(model.title, x + 40, 479, 11, active ? '#f0d6a9' : unlocked ? '#abbcd1' : '#687a92', '500', 'center');
-        this.text('Lv.' + model.level, x + 40, 496, 8, active ? '#c0a375' : '#60758f', '400', 'center');
-      });
+      this.text('LV. ' + p.level + '  /  ' + model.code, W / 2, 435, 9, C.gold, '500', 'center');
       this.text('本局成长 · 失败后重置', 34, 528, 9, '#7c92ae');
-      this.text(p.xp + ' / ' + p.nextXp, 371, 528, 9, '#a5b5ca', '500', 'right');
+      this.text(p.level === Aircraft.MAX_AIRCRAFT_LEVEL ? 'MAX · 已满级' : p.xp + ' / ' + p.nextXp, 371, 528, 9, '#a5b5ca', '500', 'right');
       this.box(34, 544, 337, 3, '#25344a', null, 1.5);
-      this.box(34, 544, 337 * Math.min(1, p.xp / p.nextXp), 3, C.gold, null, 1.5);
-      this.getSceneButtons(game).forEach(button => this.button(button, button.id === 'start' && Boolean(game.savedCheckpoint)));
+      this.box(34, 544, 337 * this.experienceRatio(p), 3, C.gold, null, 1.5);
+      this.getSceneButtons(game).forEach(button => this.button(button, button.id === 'hangar' || button.id === 'start' && Boolean(game.savedCheckpoint)));
       this.text('单指拖动  ·  自动开火  ·  击落敌机升级', W / 2, game.savedCheckpoint ? 678 : 648, 10, '#8295af', '400', 'center');
       this.line(34, game.savedCheckpoint ? 693 : 674, 371, game.savedCheckpoint ? 693 : 674, '#1d2d44');
       this.text('最高纪录', 34, game.savedCheckpoint ? 709 : 694, 9, '#697f9c');
       this.text(String(game.bestScore).padStart(6, '0'), 371, game.savedCheckpoint ? 709 : 694, 12, '#b8c7dc', '500', 'right');
+    }
+
+    experienceRatio(progression) {
+      Aircraft.getPlayerModel(progression.level);
+      if (progression.level === Aircraft.MAX_AIRCRAFT_LEVEL) return 1;
+      if (!Number.isFinite(progression.xp) || progression.xp < 0 || !Number.isFinite(progression.nextXp) || progression.nextXp <= 0) {
+        throw new RangeError('Invalid experience bar: level=' + progression.level + '; xp=' + progression.xp + '; nextXp=' + progression.nextXp);
+      }
+      return clamp01(progression.xp / progression.nextXp);
     }
 
     hud(game) {
@@ -1121,14 +1348,22 @@
       }
       const healthLabel = game.player.hp + '/' + game.player.maxHp;
       this.text(healthLabel, 22, 182, Math.min(7, 40 / healthLabel.length), '#a2b9d3', '500', 'center');
-      this.text('XP', 22, 197, 7, '#7087a6', '500', 'center');
+      this.text(p.level === Aircraft.MAX_AIRCRAFT_LEVEL ? 'MAX' : 'XP', 22, 197, 7, '#7087a6', '500', 'center');
       this.box(20, 208, 3, 41, '#25334a', null, 1.5);
-      const fill = Math.max(0, Math.min(1, p.xp / p.nextXp)) * 41;
+      const fill = this.experienceRatio(p) * 41;
       this.box(20, 249 - fill, 3, fill, '#d4b174', null, 1.5);
-      this.text('W' + game.player.weaponLevel, 22, 267, 8, '#93b0d3', '500', 'center');
-      const weapon = WEAPONS[game.player.weapon];
-      if (!weapon) throw new RangeError('Unknown equipped weapon: ' + game.player.weapon);
-      this.text(weapon.label === '追踪弹' ? '追踪' : weapon.label === '爆炸弹' ? '爆裂' : weapon.label, 22, 284, 8, weapon.color, '500', 'center');
+      const stats = game.getCombatStats();
+      this.text('挂载 ' + stats.activeWeapons.length + '/' + stats.mountSlots, 22, 267, 7, '#93b0d3', '500', 'center');
+      Object.entries(WEAPONS).forEach(([type, weapon], index) => {
+        const rank = game.player.weapons[type];
+        if (!Number.isInteger(rank) || rank < (type === 'gun' ? 1 : 0) || rank > weapon.maxLevel) throw new RangeError('Invalid HUD weapon rank: ' + type + '=' + rank);
+        const mounted = stats.activeWeapons.includes(type);
+        const label = type === 'gun' ? '机炮' : type === 'laser' ? '光柱' : type === 'homing' ? '追踪' : '爆炸';
+        this.text(label + rank + (rank > 0 && !mounted ? '储' : ''), 22, 287 + index * 22, 8,
+          mounted ? weapon.color : rank > 0 ? '#8591a8' : '#405471', mounted ? '500' : '400', 'center');
+      });
+      this.text('伤 ' + stats.damage.toFixed(1), 22, 386, 7, '#889eb9', '400', 'center');
+      this.text(stats.fireInterval.toFixed(2) + 's', 22, 403, 7, '#889eb9', '400', 'center');
       this.text(String(game.score).padStart(6, '0'), 387, 80, 12, '#a4b8d2', '500', 'right');
       this.text(this.backgrounds[game.stage].name, 387, 99, 8, '#7992ac', '400', 'right');
       this.text(game.stageName + '  ' + (game.stage + 1) + '/' + game.stageCount, 383, 687, 9, '#8195b0', '400', 'right');

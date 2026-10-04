@@ -16,8 +16,17 @@ function quiet() {
   game.start();
   advance(game, game.launchDuration);
   game.nextWave = 10000;
-  game.fireTimer = 10000;
+  silence(game);
   return game;
+}
+function silence(game) {
+  game.fireTimer = 10000;
+  game.specialFireTimers = { laser: 10000, homing: 10000, explosive: 10000 };
+}
+function equip(game, kind, rank = 1) {
+  game.addExperience(1980);
+  game.player.weapons = Object.freeze({ ...game.player.weapons, [kind]: rank });
+  game.player.weapon = kind;
 }
 function target(game, x, y, hp = 100) {
   game.spawnWave();
@@ -41,31 +50,36 @@ function assertBounds(game) {
   }
 }
 
-test('weapon pickups replace the gun with four real fire modes and persist the acquired choice', () => {
+test('pickups acquire and reinforce a stacked loadout, with reserved weapons enabled by mount slots', () => {
   const game = quiet();
-  for (const weapon of WEAPONS) {
-    collect(game, weapon);
-    assert.equal(game.player.weapon, weapon);
-    assert.equal(game.getCheckpoint().player.weapon, weapon);
-    assert.equal(game.pickups.length, 0);
-    game.playerBullets = [];
-    game.playerBeams = [];
-    game.shoot();
-    if (weapon === 'laser') {
-      assert.equal(game.playerBullets.length, 0, 'a laser is a continuous collision ray rather than a recolored bullet');
-      assert.equal(game.playerBeams.length, 1);
-      assert.equal(game.playerBeams[0].warning, 0);
-    } else {
-      assert.equal(game.playerBeams.length, 0);
-      assert.ok(game.playerBullets.every(bullet => bullet.kind === weapon));
-      assert.equal(game.playerBullets.length, weapon === 'explosive' ? 1 : 2);
-    }
-    game.fireTimer = 10000;
-  }
+  collect(game, 'laser');
+  collect(game, 'homing');
+  collect(game, 'explosive');
+  assert.deepEqual(game.getActiveWeapons(), ['gun']);
+  assert.throws(() => game.shoot('laser'), /not mounted/);
+  game.addExperience(60);
+  assert.deepEqual(game.getActiveWeapons(), ['gun', 'laser']);
+  game.addExperience(640);
+  assert.deepEqual(game.getActiveWeapons(), ['gun', 'laser', 'homing']);
+  game.addExperience(1280);
+  assert.deepEqual(game.getActiveWeapons(), WEAPONS);
+  const first = game.player.weapons;
+  const initialDamage = game.getCombatStats().damage;
+  collect(game, 'gun');
+  assert.ok(game.getCombatStats().damage > initialDamage);
+  assert.equal(first.gun, 1, 'earlier loadout snapshots stay immutable');
+  for (let repeat = 0; repeat < 7; repeat++) collect(game, 'laser');
+  assert.equal(game.player.weapons.laser, 5);
+  assert.equal(game.player.weapon, 'laser', 'last pickup does not suppress any other gun');
+  assert.deepEqual(game.getActiveWeapons(), WEAPONS);
+  assert.deepEqual(game.getCheckpoint().player.weapons, game.player.weapons);
+  assert.equal(Object.isFrozen(game.player.weapons), true);
+  game.captureCheckpoint();
   const restored = new Game({ profile: game.getProfile(), checkpoint: game.getCheckpoint() });
   restored.continueRun();
-  assert.equal(restored.player.weapon, game.player.weapon);
-  assert.equal(restored.player.weaponLevel, game.player.weaponLevel);
+  assert.deepEqual(restored.player.weapons, game.player.weapons);
+  assert.deepEqual(restored.getActiveWeapons(), WEAPONS);
+  assert.equal(restored.player.weapon, 'laser');
 });
 
 test('legacy exact v2 saves explicitly resume the original gun and unknown weapon data fails', () => {
@@ -99,8 +113,8 @@ test('laser pierces aligned enemies with continuous damage and misses a target o
   const far = target(game, game.player.x, 210);
   const outside = target(game, game.player.x + 80, 300);
   game.enemies = [near, far, outside];
-  game.player.weapon = 'laser';
-  game.shoot();
+  equip(game, 'laser');
+  game.shoot('laser');
   advance(game, 0.1);
   assert.ok(near.hp < 100 && far.hp < 100);
   assert.ok(Math.abs(near.hp - far.hp) < 1e-8, 'a nearer body does not swallow the penetrating beam');
@@ -115,8 +129,8 @@ test('homing missiles steer toward a displaced target, preserve speed and hit wi
   const game = quiet();
   const enemy = target(game, game.player.x + 92, 320, 30);
   game.enemies = [enemy];
-  game.player.weapon = 'homing';
-  game.shoot();
+  equip(game, 'homing');
+  game.shoot('homing');
   const missile = game.playerBullets[1];
   const speed = Math.hypot(missile.vx, missile.vy);
   const initialDirection = Math.atan2(missile.vy, missile.vx);
@@ -137,8 +151,8 @@ test('an explosive projectile damages several nearby targets once and leaves a d
   const nearby = target(game, 230, 300);
   const outside = target(game, 335, 300);
   game.enemies = [hit, nearby, outside];
-  game.player.weapon = 'explosive';
-  game.shoot();
+  equip(game, 'explosive');
+  game.shoot('explosive');
   const shell = game.playerBullets[0];
   Object.assign(shell, { x: hit.x, y: hit.y, vx: 0, vy: 0 });
   game.update(STEP);
@@ -226,8 +240,8 @@ test('pause freezes both beams, tracking, fuses, effects and weapon pickup state
   const enemy = target(game, 200, 160);
   Object.assign(enemy, { weaponIndex: 1, volley: 0 });
   game.enemies = [enemy];
-  game.player.weapon = 'laser';
-  game.shoot();
+  equip(game, 'laser');
+  game.shoot('laser');
   game.enemyShoot(enemy);
   game.makeBullet(100, 160, Math.PI / 2, 100, 8, 'explosive', { fuse: 1.6 });
   game.makeBullet(140, 160, Math.PI / 2, 100, 6, 'homing', { trackTime: 0.7, turnRate: 0.75 });
@@ -277,6 +291,7 @@ test('death removes weapon state, effects, ammunition and continuation before th
   game.hurt();
   assert.equal(game.state, 'ejecting');
   assert.equal(game.player.weapon, 'gun');
+  assert.deepEqual(game.player.weapons, { gun: 1, laser: 0, homing: 0, explosive: 0 });
   assert.equal(game.getCheckpoint(), null);
   for (const name of ['playerBullets', 'enemyBullets', 'playerBeams', 'enemyBeams', 'weaponEffects', 'pickups']) assert.equal(game[name].length, 0, name);
   assert.deepEqual([game.bombCharges, game.supportCharges], [0, 0]);
@@ -287,20 +302,22 @@ test('death removes weapon state, effects, ammunition and continuation before th
   assert.deepEqual([game.bombCharges, game.supportCharges], [1, 1]);
 });
 
-test('all 100 stages sustain all weapon modes within fixed memory limits and retire hazards', () => {
+test('all 100 stages sustain all stacked max-rank weapons within fixed memory limits and retire hazards', () => {
   const game = quiet();
   for (let stage = 0; stage < STAGES.length; stage++) {
     game.stage = stage;
     game.prepareStage();
     game.player.invincible = 10000;
-    game.player.weapon = WEAPONS[stage % WEAPONS.length];
+    game.player.shipLevel = 20;
+    game.player.weapons = Object.freeze({ gun: 5, laser: 5, homing: 5, explosive: 5 });
+    game.player.weaponLevel = 3;
     game.fireInterval = game.minFireInterval;
     for (let wave = 0; wave < 4; wave++) { game.wave = wave; game.spawnWave(); }
     for (const enemy of game.enemies) { enemy.y = 140; enemy.fireTimer = 0; enemy.hp = 100000; }
     game.nextWave = 10000;
     for (let frame = 0; frame < 16; frame++) { game.update(0.25); assertBounds(game); }
     game.enemies = [];
-    game.fireTimer = 10000;
+    silence(game);
     game.playerBeams = [];
     advance(game, 8, 0.25);
     assert.equal(game.enemyBullets.length, 0, 'stage ' + stage + ' retires hostile hazards');
@@ -316,11 +333,171 @@ test('fixed simulation steps reproduce laser and homing combat at high and low d
     for (const game of [fast, slow]) {
       const enemy = target(game, game.player.x + (weapon === 'laser' ? 0 : 55), 250, 1000);
       game.enemies = [enemy];
-      game.player.weapon = weapon;
+      equip(game, weapon);
       game.fireTimer = 0;
+      game.specialFireTimers[weapon] = 0;
     }
     advance(fast, 2, STEP);
     advance(slow, 2, 0.25);
     assert.deepEqual(JSON.parse(JSON.stringify(fast)), JSON.parse(JSON.stringify(slow)), weapon);
   }
+});
+
+test('each mounted weapon fires on its independent cadence while the base gun is always retained', () => {
+  const game = quiet();
+  game.addExperience(1980);
+  for (const weapon of ['laser', 'homing', 'explosive']) collect(game, weapon);
+  game.playerBullets = [];
+  game.playerBeams = [];
+  game.fireTimer = 0;
+  game.specialFireTimers = { laser: 0, homing: 0, explosive: 0 };
+  const counts = { gun: 0, laser: 0, homing: 0, explosive: 0 };
+  game.onEvent = (event, payload) => { if (event === 'shot') counts[payload.weapon]++; };
+  advance(game, 4);
+  for (const weapon of WEAPONS) {
+    assert.equal(counts[weapon], Math.ceil(4 / game.weaponFireInterval(weapon)), weapon + ' has an independent firing clock');
+  }
+  assert.ok(counts.gun > counts.laser && counts.laser > counts.homing && counts.homing > counts.explosive);
+  assert.ok(game.playerBullets.some(bullet => bullet.kind === 'gun'));
+  const clocks = { gun: game.fireTimer, ...game.specialFireTimers };
+  collect(game, 'homing');
+  assert.ok(game.fireTimer < clocks.gun, 'pickup advances rather than restarts the gun clock');
+  assert.ok(game.specialFireTimers.laser < clocks.laser, 'unrelated beams keep their cadence');
+});
+
+test('repeat pickups strengthen only their own weapon and do not delete an existing beam', () => {
+  const game = quiet();
+  game.addExperience(1980);
+  for (const weapon of ['laser', 'homing', 'explosive']) collect(game, weapon);
+  game.shoot('laser');
+  const beam = game.playerBeams[0];
+  const priorLaserDamage = beam.damagePerSecond;
+  const oldRanks = game.player.weapons;
+  game.shoot('homing');
+  const oldHomingDamage = game.playerBullets[0].damage;
+  const oldHomingInterval = game.weaponFireInterval('homing');
+  collect(game, 'homing');
+  assert.ok(game.playerBeams.includes(beam), 'picking up a missile does not cancel an active laser');
+  assert.deepEqual(oldRanks, { gun: 1, laser: 1, homing: 1, explosive: 1 });
+  game.playerBullets = [];
+  game.shoot('homing');
+  assert.ok(game.playerBullets[0].damage > oldHomingDamage);
+  assert.ok(game.weaponFireInterval('homing') < oldHomingInterval);
+  game.shoot('laser');
+  assert.equal(game.playerBeams.at(-1).damagePerSecond, priorLaserDamage);
+  collect(game, 'gun');
+  game.shoot('laser');
+  assert.equal(game.playerBeams.at(-1).damagePerSecond, priorLaserDamage, 'a gun rank does not silently rank up the laser');
+});
+
+test('all twenty levels use the shared appearance and cap while level and late stages improve real firepower', () => {
+  const { getPlayerModel } = require('../src/aircraft.js');
+  const game = quiet();
+  let previousStats = game.getCombatStats();
+  for (let level = 2; level <= 20; level++) {
+    const threshold = 20 * (level - 1) ** 2 + 40 * (level - 1);
+    game.addExperience(threshold - game.profile.totalXp);
+    assert.equal(game.progression.level, level);
+    assert.strictEqual(game.player.appearance, getPlayerModel(level).appearance);
+    assert.equal(game.progression.title, getPlayerModel(level).title);
+    const stats = game.getCombatStats();
+    assert.ok(stats.damage > previousStats.damage);
+    assert.ok(stats.fireInterval < previousStats.fireInterval);
+    game.playerBullets = [];
+    game.shoot();
+    assert.equal(game.playerBullets[0].damage, stats.damage);
+    previousStats = stats;
+  }
+  game.addExperience(100000);
+  assert.equal(game.progression.level, 20);
+  assert.equal(game.progression.xp, 0);
+  assert.equal(game.progression.nextXp, 0);
+  assert.equal(game.player.shipLevel, 20);
+  assert.equal(game.getCombatStats().damage, previousStats.damage, 'experience above max level does not invent another aircraft');
+  let previousDamage = previousStats.damage;
+  let previousInterval = previousStats.fireInterval;
+  for (let stage = 1; stage < STAGES.length; stage++) {
+    game.stage = stage;
+    game.prepareStage();
+    const stats = game.getCombatStats();
+    assert.ok(stats.damage > previousDamage, 'damage still grows at stage ' + (stage + 1));
+    assert.ok(stats.fireInterval < previousInterval, 'fire rate still grows at stage ' + (stage + 1));
+    game.shoot();
+    assert.equal(game.playerBullets[0].damage, stats.damage);
+    previousDamage = stats.damage;
+    previousInterval = stats.fireInterval;
+  }
+  assert.equal(game.fireInterval, 0.16, 'derived stage fire rate does not mutate the saved baseline');
+});
+
+test('actual high-level auto fire produces more shots and damage than the original aircraft', () => {
+  const fresh = quiet(), grown = quiet();
+  grown.addExperience(7980);
+  grown.stage = 99;
+  grown.prepareStage();
+  for (const game of [fresh, grown]) {
+    game.nextWave = 10000;
+    game.fireTimer = 0;
+    game.onEvent = event => { if (event === 'shot') game.recordedShots++; };
+    game.recordedShots = 0;
+    advance(game, 2);
+  }
+  assert.ok(grown.recordedShots > fresh.recordedShots);
+  assert.ok(grown.playerBullets[0].damage > fresh.playerBullets[0].damage * 6);
+});
+
+test('all four stacked weapons reproduce the same combat at 120 FPS and 4 FPS', () => {
+  const fast = quiet(), slow = quiet();
+  for (const game of [fast, slow]) {
+    game.addExperience(7980);
+    game.stage = 98;
+    game.prepareStage();
+    game.nextWave = 10000;
+    game.fireInterval = game.minFireInterval;
+    game.player.weaponLevel = 3;
+    game.player.weapons = Object.freeze({ gun: 5, laser: 5, homing: 5, explosive: 5 });
+    const enemy = target(game, game.player.x + 35, 250, 100000);
+    game.enemies = [enemy];
+  }
+  advance(fast, 5, STEP);
+  advance(slow, 5, 0.25);
+  assert.deepEqual(JSON.parse(JSON.stringify(fast)), JSON.parse(JSON.stringify(slow)));
+  assertBounds(fast);
+});
+
+test('late bosses have a practical kill time with acquired weapons and repeat ranks increase actual damage output', t => {
+  const times = [];
+  for (const stage of [79, 89, 98, 99]) {
+    const buildTimes = [];
+    for (const rank of [1, 5]) {
+      const game = quiet();
+      game.addExperience(7980);
+      game.stage = stage;
+      game.prepareStage();
+      game.nextWave = 10000;
+      game.player.invincible = 10000;
+      game.player.weaponLevel = 3;
+      game.player.weapons = Object.freeze({ gun: rank, laser: rank, homing: rank, explosive: rank });
+      game.fireInterval = game.minFireInterval;
+      game.spawnBoss();
+      const boss = game.enemies[0];
+      boss.y = 160;
+      boss.fireTimer = 10000;
+      let elapsed = 0;
+      // Track a moving boss without dodging to measure combat output directly;
+      // this deliberately excludes survival skill from the damage benchmark.
+      while (game.state === 'playing' && elapsed < 40) {
+        game.player.x = boss.x;
+        game.update(STEP);
+        elapsed += STEP;
+        assertBounds(game);
+      }
+      assert.equal(boss.destroyed, true, 'stage ' + (stage + 1) + ' must not stall at the level cap');
+      assert.ok(elapsed >= 3 && elapsed < 20, 'stage ' + (stage + 1) + ' rank ' + rank + ' kill time: ' + elapsed);
+      buildTimes.push(elapsed);
+    }
+    assert.ok(buildTimes[1] < buildTimes[0] * 0.7, 'repeated drops materially improve the late boss fight');
+    times.push({ stage: stage + 1, firstRankSeconds: +buildTimes[0].toFixed(2), fifthRankSeconds: +buildTimes[1].toFixed(2) });
+  }
+  t.diagnostic(JSON.stringify(times));
 });

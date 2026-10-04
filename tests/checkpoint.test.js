@@ -11,6 +11,77 @@ function advance(game, duration) {
 function playing(options) { const game = new Game(options); game.start(); advance(game, game.launchDuration); return game; }
 function defeatBoss(game) { game.spawnBoss(); const boss = game.enemies.find(enemy => enemy.type === 'boss'); game.destroyEnemy(boss); }
 
+test('checkpoint loadouts explicitly migrate published v2 shapes and reject partial or inconsistent new shapes', () => {
+  const game = playing();
+  const checkpoint = game.getCheckpoint();
+  const stats = { hp: 5, maxHp: 5, weaponLevel: 2 };
+  const gun = validateCheckpoint({ ...checkpoint, player: stats });
+  assert.deepEqual(gun.player, { ...stats, weapon: 'gun', weapons: { gun: 1, laser: 0, homing: 0, explosive: 0 } });
+  for (const weapon of ['laser', 'homing', 'explosive']) {
+    const migrated = validateCheckpoint({ ...checkpoint, player: { ...stats, weapon } });
+    assert.deepEqual(migrated.player.weapons, { gun: 1, laser: 0, homing: 0, explosive: 0, [weapon]: 1 });
+    assert.equal(migrated.player.weapon, weapon);
+  }
+  const weapons = { gun: 2, laser: 3, homing: 4, explosive: 5 };
+  const player = { ...stats, weapon: 'homing', weapons };
+  const validated = validateCheckpoint({ ...checkpoint, player });
+  weapons.laser = 0;
+  assert.equal(validated.player.weapons.laser, 3, 'validation owns a copy of every weapon rank');
+  assert.equal(Object.isFrozen(validated.player.weapons), true);
+  for (const malformed of [
+    { ...player, weapon: 'laser' },
+    { ...stats, weapons },
+    { ...player, unknown: true },
+    { ...player, weapons: { gun: 1, laser: 1, homing: 1 } },
+    { ...player, weapons: { ...weapons, spread: 1 } },
+    ...[0, 6, 1.5, null, '2', NaN].map(gun => ({ ...player, weapons: { ...weapons, gun } })),
+    ...[-1, 6, 0.5, null, '2', NaN].map(homing => ({ ...player, weapons: { ...weapons, homing } }))
+  ]) assert.throws(() => validateCheckpoint({ ...checkpoint, player: malformed }), /checkpoint player/);
+});
+
+test('acquisition persists one immutable loadout boundary atomically and continuation cannot duplicate rank or grant a free skill', () => {
+  const game = playing();
+  game.callSupport();
+  game.useBomb();
+  game.addExperience(1980);
+  game.captureCheckpoint();
+  const initial = game.savedCheckpoint;
+  const events = [];
+  game.onEvent = (event, payload) => {
+    if (event === 'checkpoint') {
+      assert.deepEqual(payload.checkpoint.player.weapons, game.player.weapons);
+      assert.equal(payload.checkpoint.player.weapon, game.player.weapon);
+      events.push(payload.checkpoint);
+    }
+  };
+  game.acquireWeapon('laser');
+  game.acquireWeapon('laser');
+  assert.equal(events.length, 2);
+  assert.equal(initial.player.weapons.laser, 0);
+  assert.equal(game.savedCheckpoint.player.weapons.laser, 2);
+  assert.equal(Object.isFrozen(game.savedCheckpoint.player.weapons), true);
+  assert.throws(() => { game.savedCheckpoint.player.weapons.laser = 5; }, TypeError);
+  const ranks = game.player.weapons;
+  const saved = game.savedCheckpoint;
+  assert.throws(() => game.acquireWeapon('invalid'), /Unknown pickup weapon/);
+  assert.strictEqual(game.player.weapons, ranks);
+  assert.strictEqual(game.savedCheckpoint, saved);
+  const restored = new Game({ profile: game.getProfile(), checkpoint: game.getCheckpoint() });
+  restored.continueRun();
+  advance(restored, restored.launchDuration);
+  assert.deepEqual(restored.player.weapons, ranks);
+  assert.equal(Object.isFrozen(restored.player.weapons), true);
+  assert.deepEqual(restored.getActiveWeapons(), ['gun', 'laser']);
+  assert.equal(restored.callSupport(), false);
+  assert.equal(restored.useBomb(), false);
+  defeatBoss(restored);
+  restored.chooseUpgrade('rapid');
+  assert.equal(restored.getCheckpoint().player.weapons.laser, 2);
+  assert.deepEqual(restored.getCheckpoint().freeCharges, { bomb: 0, support: 0 });
+  assert.equal(restored.getCheckpoint().fireInterval, restored.fireInterval, 'only the base interval is serialized');
+  assert.ok(restored.getCombatStats().fireInterval < restored.fireInterval);
+});
+
 test('a recovered interrupted stage starts its waves again using saved stage-boundary stats', () => {
   const game = playing({ seed: -24 });
   defeatBoss(game);
