@@ -38,6 +38,10 @@
         "type": "file"
       },
       {
+        "value": "game.html",
+        "type": "file"
+      },
+      {
         "value": "style.css",
         "type": "file"
       },

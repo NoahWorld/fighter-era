@@ -14,7 +14,8 @@ if (!['127.0.0.1', '0.0.0.0'].includes(host)) {
   throw new Error(`Invalid HOST: ${host}. Expected 127.0.0.1 or 0.0.0.0.`);
 }
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png' };
-const publicFiles = new Set(['index.html', 'style.css', 'src/browser.js', 'src/engine.js', 'src/renderer.js', 'src/assets.js', 'assets/player.png', 'assets/enemies.png', 'assets/warships.png', 'assets/projectiles.png', 'assets/expansion/enemy-variants.png', 'assets/expansion/fleet.png']);
+const pageRoutes = new Map([['/', 'index.html'], ['/game', 'game.html'], ['/game/', 'game.html']]);
+const publicFiles = new Set(['index.html', 'game.html', 'style.css', 'src/browser.js', 'src/engine.js', 'src/renderer.js', 'src/assets.js', 'assets/player.png', 'assets/enemies.png', 'assets/warships.png', 'assets/projectiles.png', 'assets/expansion/enemy-variants.png', 'assets/expansion/fleet.png']);
 
 const server = http.createServer(async (req, res) => {
   const send = (code, message) => { res.writeHead(code, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end(req.method === 'HEAD' ? undefined : message); };
@@ -23,7 +24,7 @@ const server = http.createServer(async (req, res) => {
   try { requested = decodeURIComponent(req.url.split('?')[0]); }
   catch (error) { console.warn('[HTTP] Invalid URL encoding', req.url, error.message); send(400, 'Invalid URL encoding'); return; }
   if (!requested.startsWith('/') || requested.includes('\0') || requested.includes('\\') || requested.split('/').includes('..')) { send(403, 'Forbidden path'); return; }
-  const relative = requested === '/' ? 'index.html' : requested.slice(1);
+  const relative = pageRoutes.get(requested) ?? requested.slice(1);
   if (!publicFiles.has(relative)) { send(404, 'Not found'); return; }
   const file = path.resolve(root, relative);
   if (!file.startsWith(root + path.sep)) { send(403, 'Forbidden path'); return; }

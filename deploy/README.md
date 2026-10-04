@@ -33,13 +33,13 @@ docker compose logs --tail 100 api
 
 启动先执行事务迁移并核验已应用迁移的摘要；迁移失败时服务停止，不能跳过或改写旧迁移制造就绪状态。升级数据库结构须新增迁移文件。肉鸽版本新增迁移 `002_roguelike_saves.sql`，清空旧永久经验和续关并停用旧存活对局编号，但保留账号、库存与历史成绩。更新前先备份，再同步审查后的项目文件及公开试玩目录；未启用 HTTPS 时使用基础 Compose 配置，已启用时按后文双配置命令更新。始终保留 `deploy/.env` 与 `backups/`。
 
-浏览器试玩由独立 `web` 容器提供，目录为 `/opt/fighter-era/playtest`，只复制 `server.js`、`index.html`、`style.css`、`src/browser.js`、`src/engine.js`、`src/renderer.js`、`src/assets.js` 与六张图集，按原路径组织。静态服务仅允许公开资源；私有配置、后端源码和 Git 数据不可访问。默认公开端口 8080，可在私有配置中设置 `PLAYTEST_PORT`。云安全组需放行此 TCP 端口；已有 80 端口应用不变。启动前必须先创建并填充试玩目录，不能让空目录伪装健康。
+浏览器网站由独立 `web` 容器提供，目录为 `/opt/fighter-era/playtest`，只复制 `server.js`、`index.html`、`game.html`、`style.css`、`src/browser.js`、`src/engine.js`、`src/renderer.js`、`src/assets.js` 与六张图集，按原路径组织。`/` 为字数统计工具，`/game` 和 `/game/` 显示游戏；游戏 HTML 以根目录 base 解析素材。静态服务仅允许公开资源；私有配置、后端源码和 Git 数据不可访问。默认公开端口 8080，可在私有配置中设置 `PLAYTEST_PORT`。云安全组需放行此 TCP 端口；已有 80 端口应用不变。启动前必须先创建并填充网站目录，不能让空目录伪装健康。只更新首页和静态路由时，备份当前公开文件后同步 `server.js`、`index.html`、`game.html`，使用双配置命令 `docker compose -f compose.yaml -f compose.https.yaml restart web`，无需重建 API、数据库或网关；随后检查首页、两个游戏路由及资源。
 
 浏览器试玩使用本机存档，可用于朋友测试；真实微信登录和跨设备账号存档仍需要 AppSecret、微信 request 合法域名和客户端公开 `apiBase`。`/health/ready` 报告数据库 `ready`、微信 `pending_configuration`，以及支付和广告 `not_enabled`，只代表数据库服务可用。
 
 ## 域名与 HTTPS
 
-域名 `resetshi.work` 与 `www.resetshi.work` 的 A 记录均指向 `47.116.38.160`，TTL 为 600 秒。HTTPS 网关是战机时代独立的 Caddy 容器，配置为 `Caddyfile` 和显式启用的 `compose.https.yaml`，只发布 TCP 443。游戏地址为 `https://resetshi.work/`，`www` 也提供同一游戏；公网 API 地址为 `https://resetshi.work/api`。`handle_path /api/*` 剥离 `/api` 后代理到 `api-https:4317`，其它路径代理到 `web:4173`，因此就绪地址为 `/api/health/ready`。
+域名 `resetshi.work` 与 `www.resetshi.work` 的 A 记录均指向 `47.116.38.160`，TTL 为 600 秒。HTTPS 网关是战机时代独立的 Caddy 容器，配置为 `Caddyfile` 和显式启用的 `compose.https.yaml`，只发布 TCP 443。首页工具地址为 `https://resetshi.work/`，游戏地址为 `https://resetshi.work/game`；`www` 提供相同路径和内容，公网 API 地址为 `https://resetshi.work/api`。`handle_path /api/*` 剥离 `/api` 后代理到 `api-https:4317`，其它路径代理到 `web:4173`，因此就绪地址为 `/api/health/ready`。
 
 在私有 `deploy/.env` 配置 `FIGHTER_DOMAIN=resetshi.work` 和 `CADDY_IMAGE`。服务器使用经验证的 Caddy 2.11.6 镜像并固定镜像摘要；模板默认使用官方 `caddy:2-alpine`。启用前确认 DNS 已生效、443 空闲且云防火墙允许 TCP 443。检查 Docker 网络与云内网地址没有和专属 `172.31.247.0/29` 网络冲突。
 
@@ -105,6 +105,13 @@ docker compose exec -T db psql -U postgres -d fighter_era_restore_test -v ON_ERR
 实际恢复生产库前须确定目标、停写时段、备份和回退方案。恢复演练成功不代表异机恢复或生产事故恢复已验证，不能把测试库操作直接改成生产库覆盖执行。
 
 ## 当前验证范围
+
+首页与游戏路由于 2026-10-04 完成以下检查：
+
+- `/` 改为单文件字数统计，`/game` 与 `/game/` 提供原游戏；实际浏览器验证中文、表情、空白、换行与清空操作，游戏图集正常显示，控制台无警告或错误。
+- 主域名首页、两个游戏路由、样式、素材加载代码、玩家图集与 `/api/health/ready` 均通过严格证书校验返回 200；`www` 首页与 `/game` 返回 200，私有 `deploy/.env` 返回 404。三个公开更新文件的 SHA-256 与本地一致。
+- 本地语法检查、2 项静态路由/访问限制测试与 7 项图集/微信包测试通过。首页和静态路由改动未重新执行客户端全量或后端测试。
+- 更新前将公开目录备份到 `/opt/fighter-era/site-route-deploy-audit/20261004-home-game/playtest-before.tgz`，只重启 `web`；API、数据库、网关保持运行，API 仍报告微信待配置、广告与支付未启用。既有 `/opt/learning-workbench` 四个关键文件 SHA-256 与基线一致，原应用容器保持运行。
 
 域名与 HTTPS 于 2026-10-04 完成以下检查：
 

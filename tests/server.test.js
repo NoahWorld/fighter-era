@@ -32,7 +32,7 @@ function request(port, resource, method = 'GET') {
   });
 }
 
-test('public playtest serves game assets but cannot expose backend, secrets or traversal', { timeout: 10000 }, async t => {
+test('public site serves the tool homepage and game routes without exposing private files or traversal', { timeout: 10000 }, async t => {
   const port = await availablePort();
   const child = spawn(process.execPath, ['server.js'], {
     cwd: root, env: { ...process.env, HOST: '0.0.0.0', PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe']
@@ -53,8 +53,20 @@ test('public playtest serves game assets but cannot expose backend, secrets or t
   });
   const page = await request(port, '/');
   assert.equal(page.status, 200);
-  assert.match(page.body.toString(), /战机时代/);
+  assert.match(page.body.toString(), /字数统计/);
+  assert.doesNotMatch(page.body.toString(), /game-canvas|src\/browser\.js/);
   assert.equal(page.headers['x-content-type-options'], 'nosniff');
+  for (const route of ['/game', '/game/', '/game?source=playtest']) {
+    const game = await request(port, route);
+    assert.equal(game.status, 200, route);
+    assert.match(game.body.toString(), /战机时代/);
+    assert.match(game.body.toString(), /<base href="\/">/);
+    assert.match(game.body.toString(), /src="\/src\/browser\.js"/);
+    assert.match(game.body.toString(), /href="\/style\.css"/);
+  }
+  assert.equal((await request(port, '/game', 'HEAD')).body.length, 0);
+  assert.equal((await request(port, '/game', 'POST')).status, 405);
+  assert.equal((await request(port, '/game/unknown')).status, 404);
   for (const resource of ['/src/engine.js', '/src/browser.js', '/assets/player.png', '/assets/expansion/fleet.png']) {
     const result = await request(port, resource);
     assert.equal(result.status, 200, resource);

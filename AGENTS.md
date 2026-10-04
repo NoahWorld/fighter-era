@@ -2,7 +2,7 @@
 
 ## 目标与入口
 
-产品名「战机时代 / FIGHTER ERA」。零依赖原生 Canvas 竖屏射击客户端，桌面采用深空蓝和金色成长档案界面，手机显示完整游戏。浏览器与微信小游戏共享引擎、渲染器和本地素材；逻辑画布固定 405 × 720。浏览器入口 `index.html` → `src/browser.js`；微信入口 `game.js`，配置 `game.json` 与 `project.config.json`。用户提供的六张透明 PNG 图集在 `assets/`，新增两张位于 `assets/expansion/` 微信分包；客户端不引入未经任务需要的远程素材、字体或构建依赖。账号后端独立位于 `backend/`，使用 Node.js 22、Fastify 5、PostgreSQL 17；不能把后端依赖或密钥打入微信包。
+产品名「战机时代 / FIGHTER ERA」。零依赖原生 Canvas 竖屏射击客户端，桌面采用深空蓝和金色成长档案界面，手机显示完整游戏。浏览器与微信小游戏共享引擎、渲染器和本地素材；逻辑画布固定 405 × 720。网站 `/` 为 `index.html` 单文件字数统计工具，输入只在浏览器即时处理，不上传或保存；`/game` 和 `/game/` 为 `game.html` → `src/browser.js`，页面以根目录 base 解析图集，不能因尾斜杠导致素材请求错误。微信入口 `game.js`，配置 `game.json` 与 `project.config.json`；两个 HTML 均排除出微信包。用户提供的六张透明 PNG 图集在 `assets/`，新增两张位于 `assets/expansion/` 微信分包；客户端不引入未经任务需要的远程素材、字体或构建依赖。账号后端独立位于 `backend/`，使用 Node.js 22、Fastify 5、PostgreSQL 17；不能把后端依赖或密钥打入微信包。
 
 游戏画面包含星空、远景行星、战舰（`warship`）和敌对行星（`planet`）。100 关分为 10 个星域，每 10 关切换一套背景配色；固定 84 颗星点分层向下循环，星云与远景天体完全离屏后复用，不添加大图、逐帧渐变、模糊或离屏画布分配。背景时钟在菜单、登机、战斗之间连续，暂停和结果页面冻结。左侧生命条使用固定高度、比例和数值表达生命，不随本局等级增加而无限延长。开始按钮文案为「驾驶战机出击」。
 
@@ -50,7 +50,7 @@
 ## 独立服务器与备份
 
 - 服务专用目录为 `/opt/fighter-era`，Compose 配置位于 `/opt/fighter-era/deploy`，项目名 `fighter-era`。**绝不修改 `/opt/learning-workbench` 或其应用、数据库、配置与运行服务**；所有部署和备份操作仅针对战机时代自己的 Compose 项目、卷与目录。
-- 公网浏览器试玩由独立 `web` 容器提供，HTTP 端口默认为 8080，静态目录 `/opt/fighter-era/playtest` 只放游戏公开资源。域名 `resetshi.work` 与 `www.resetshi.work` 的 A 记录指向 `47.116.38.160`。独立 Caddy 网关以 `deploy/compose.https.yaml` 显式启用，仅发布 TCP 443；游戏地址为 `https://resetshi.work/`，`/api/*` 剥离前缀后转发 `api-https:4317`，其它路径转发 `web:4173`。TLS-ALPN-01 验证与自动续期使用 443，禁用 HTTP challenge 和自动跳转，不监听已有应用的 80。证书与 ACME 账户使用专属持久卷，不能提交或删除。
+- 公网浏览器试玩由独立 `web` 容器提供，HTTP 端口默认为 8080，静态目录 `/opt/fighter-era/playtest` 只放工具首页和游戏公开资源。域名 `resetshi.work` 与 `www.resetshi.work` 的 A 记录指向 `47.116.38.160`。独立 Caddy 网关以 `deploy/compose.https.yaml` 显式启用，仅发布 TCP 443；首页工具地址为 `https://resetshi.work/`，游戏地址为 `https://resetshi.work/game`，`/api/*` 剥离前缀后转发 `api-https:4317`，其它路径转发 `web:4173`。TLS-ALPN-01 验证与自动续期使用 443，禁用 HTTP challenge 和自动跳转，不监听已有应用的 80。证书与 ACME 账户使用专属持久卷，不能提交或删除。只更新首页/静态路由时同步两个 HTML 与 server.js，仅重启 web，不重建 API、数据库或网关。
 - HTTPS 覆盖配置将 API 与网关接入专属内部网络 `172.31.247.0/29`，网关固定 `172.31.247.2`。后端启用 `TRUST_PROXY_HOPS=1` 必须同时配置此精确 `TRUST_PROXY_ADDRESS`，只信任直接网关的单跳转发地址；默认 0 不信任代理，非法或缺失配置须启动失败。新增网络前核对冲突；HTTPS 已启用时更新 API 要同时指定两个 Compose 配置文件，不能丢失网络和可信代理约定。
 - 浏览器试玩仅同一来源本机存档，没有微信账号登录；HTTP 8080 与 HTTPS 的存档不自动迁移。API 宿主映射仍仅 `127.0.0.1:8088`；PostgreSQL 17 不发布宿主机端口。配置放 `deploy/.env` 并限制为 600；数据库用独立随机凭据，应用数据库角色不是超级用户。AppSecret、微信 request 合法域名和客户端 `apiBase` 仍待配置；HTTPS 可用不代表微信登录、广告或支付已开通。不要提交 `.env`、密钥、日志或备份。
 - 运行、健康检查、更新、备份与独立恢复演练按 [部署说明](deploy/README.md)。`deploy/backup.sh` 用 `pg_dump --format=custom` 写 `/opt/fighter-era/backups`，只在成功且非空后把 `.partial` 改为正式备份。每日计时器由服务器 systemd 管理，备份失败必须可查日志。已有备份文件不等于验证过恢复或异机容灾；新验证结果应明确记录其范围。
