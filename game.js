@@ -15,6 +15,8 @@ let ready = false;
 let hidden = false;
 let previousTime = null;
 let touchSession = null;
+let rewardOffer = null;
+let resumeAfterReward = false;
 let viewport;
 let loadingMessage = '正在加载战机与弹药素材…';
 // Growth and its alive checkpoint are stored in one atomic, versioned record.
@@ -137,20 +139,51 @@ function pointFor(touch) {
 function activate(id) {
   if (!ready || stopped) return;
   if (cloud.usingInventory) return;
+  if (rewardOffer && id !== 'reward:close') return;
   if (id === 'start' || id === 'restart') { cloud.beginRun(false); game.start(); }
   else if (id === 'continue') { cloud.beginRun(true); game.continueRun(); }
   else if (id === 'pause') game.pause();
   else if (id === 'resume') { previousTime = null; game.resume(); }
   else if (id === 'home') { cloud.endRun(); game.home(); }
-  else if (id === 'support') { if (game.supportCharges > 0) game.callSupport(); else void cloud.useInventory('support'); }
-  else if (id === 'bomb') { if (game.bombCharges > 0) game.useBomb(); else void cloud.useInventory('bomb'); }
+  else if (id === 'support' && game.state === 'playing') {
+    if (game.supportCharges > 0) game.callSupport();
+    else if (game.inventory.support > 0) void cloud.useInventory('support');
+    else openRewardOffer('support');
+  }
+  else if (id === 'bomb' && game.state === 'playing') {
+    if (game.bombCharges > 0) game.useBomb();
+    else if (game.inventory.bomb > 0) void cloud.useInventory('bomb');
+    else openRewardOffer('bomb');
+  }
+  else if (id === 'revive' && game.state === 'gameover') openRewardOffer('revive');
+  else if (id === 'reward:close' && rewardOffer) closeRewardOffer();
   else if (id.startsWith('upgrade:')) game.chooseUpgrade(id.slice(8));
   else throw new Error(`未知微信界面按钮：${id}`);
+}
+
+function openRewardOffer(item) {
+  touchSession = null;
+  previousTime = null;
+  resumeAfterReward = game.state === 'playing';
+  game.pause();
+  rewardOffer = item;
+  renderer.showRewardOffer(item);
+  console.info('[Fighter Era / reward-offer]', { item, state: game.state, advertising: 'not-configured', payment: 'not-configured' });
+}
+
+function closeRewardOffer() {
+  touchSession = null;
+  previousTime = null;
+  renderer.hideRewardOffer();
+  rewardOffer = null;
+  if (resumeAfterReward) game.resume();
+  resumeAfterReward = false;
 }
 
 function suspend() {
   touchSession = null;
   previousTime = null;
+  resumeAfterReward = false;
   if (game) game.pause();
 }
 

@@ -158,7 +158,7 @@ function loadActivate(game, bridge) {
   const from = source.indexOf('function activate(id) {');
   const to = source.indexOf('\nfunction suspend()', from);
   assert.ok(from >= 0 && to > from, 'actual WeChat input handler is present');
-  const compiled = vm.runInThisContext('(function(game,cloud){ let ready=true,stopped=false,previousTime=null;\n' + source.slice(from, to) + '\nreturn activate;})', { filename: 'game.js:activate' });
+  const compiled = vm.runInThisContext('(function(game,cloud){ let ready=true,stopped=false,previousTime=null,rewardOffer=null,resumeAfterReward=false;\n' + source.slice(from, to) + '\nreturn activate;})', { filename: 'game.js:activate' });
   return compiled(game, bridge);
 }
 
@@ -483,7 +483,7 @@ test('ordinary experience is durable during a request and terminal coalescing re
   assert.equal(f.memory.get(STORAGE_KEY).queue.length, 0);
 });
 
-test('actual WeChat buttons use each free stage ability without calling paid inventory', async () => {
+test('actual WeChat buttons use each free run ability without calling paid inventory', async () => {
   const f = fixture();
   const activate = loadActivate(f.game, f.bridge);
   activate('start');

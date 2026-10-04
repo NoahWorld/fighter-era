@@ -14,6 +14,8 @@
   let renderer;
   let lastFrame = null;
   let buttonSignature = '';
+  let rewardOffer = null;
+  let resumeAfterReward = false;
   let dpr = 1;
   const keys = new Set();
 
@@ -185,7 +187,7 @@
     }
     soundButton.addEventListener('click', () => { audio.enabled = !audio.enabled; updateSoundButton(); void audio.unlock(); });
     updateSoundButton();
-    const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'upgrade', 'levelup', 'gameover', 'victory']);
+    const loggedEvents = new Set(['state', 'stage', 'boss', 'cinematic', 'ability', 'weapon', 'upgrade', 'levelup', 'gameover', 'victory']);
     game = new Game({ profile, checkpoint, bestScore, onEvent: (name, payload) => {
       const terminalState = name === 'state' && ['ejecting', 'gameover', 'victory'].includes(payload.state);
       if (terminalState) { saveRun(); saveBestScore(); }
@@ -226,6 +228,7 @@
     }
     function suspend() {
       resetInput();
+      resumeAfterReward = false;
       game.pause();
       lastFrame = null;
       syncButtons();
@@ -233,8 +236,26 @@
     window.addEventListener('blur', suspend);
     document.addEventListener('visibilitychange', () => { if (document.hidden) suspend(); });
 
+    function openRewardOffer(item) {
+      resetInput();
+      resumeAfterReward = game.state === 'playing';
+      game.pause();
+      lastFrame = null;
+      rewardOffer = item;
+      renderer.showRewardOffer(item);
+      console.info('[Fighter Era / reward-offer]', { item, state: game.state, advertising: 'not-configured', payment: 'not-configured' });
+    }
+    function closeRewardOffer() {
+      renderer.hideRewardOffer();
+      rewardOffer = null;
+      lastFrame = null;
+      if (resumeAfterReward) game.resume();
+      resumeAfterReward = false;
+    }
+
     function activate(id) {
       if (stopped) return;
+      if (rewardOffer && id !== 'reward:close') return;
       if (id !== 'support' && id !== 'bomb') resetInput();
       void audio.unlock();
       if (id === 'start' || id === 'restart') game.start();
@@ -242,8 +263,16 @@
       else if (id === 'pause') game.pause();
       else if (id === 'resume') { lastFrame = null; game.resume(); }
       else if (id === 'home') game.home();
-      else if (id === 'support') game.callSupport();
-      else if (id === 'bomb') game.useBomb();
+      else if (id === 'support' && game.state === 'playing') {
+        if (game.supportCharges > 0) game.callSupport();
+        else openRewardOffer('support');
+      }
+      else if (id === 'bomb' && game.state === 'playing') {
+        if (game.bombCharges > 0) game.useBomb();
+        else openRewardOffer('bomb');
+      }
+      else if (id === 'revive' && game.state === 'gameover') openRewardOffer('revive');
+      else if (id === 'reward:close' && rewardOffer) closeRewardOffer();
       else if (id.startsWith('upgrade:')) game.chooseUpgrade(id.slice('upgrade:'.length));
       else throw new Error(`未知按钮：${id}`);
       if (game.isActive() && diagnostics.delete('frame')) {
@@ -337,6 +366,11 @@
     window.addEventListener('keydown', event => {
       if (stopped || event.metaKey || event.ctrlKey || event.altKey) return;
       const key = event.key.toLowerCase();
+      if (rewardOffer) {
+        if (['escape', 'p', 'r', 'b'].includes(key) || movementKeys.has(key)) event.preventDefault();
+        if (key === 'escape' && !event.repeat) activate('reward:close');
+        return;
+      }
       if (movementKeys.has(key) && game.state === 'playing') { event.preventDefault(); keys.add(key); void audio.unlock(); }
       if ((key === 'r' || key === 'b') && game.state === 'playing' && !event.repeat) {
         event.preventDefault();

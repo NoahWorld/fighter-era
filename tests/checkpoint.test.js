@@ -60,7 +60,7 @@ test('spent free abilities stay spent after surviving reload while death removes
   assert.equal(reloaded.useBomb(), false);
   defeatBoss(reloaded);
   reloaded.chooseUpgrade('spread');
-  assert.deepEqual(reloaded.getCheckpoint().freeCharges, { bomb: 1, support: 1 });
+  assert.deepEqual(reloaded.getCheckpoint().freeCharges, { bomb: 0, support: 0 });
   reloaded.player.hp = 1;
   reloaded.player.invincible = 0;
   reloaded.hurt();
@@ -184,7 +184,7 @@ test('free skill use leaves account inventory unchanged and explicit inventory u
   defeatBoss(game);
   game.chooseUpgrade('spread');
   assert.deepEqual(game.inventory, { bomb: 2, support: 1 });
-  assert.deepEqual(game.getCheckpoint().freeCharges, { bomb: 1, support: 1 });
+  assert.deepEqual(game.getCheckpoint().freeCharges, { bomb: 0, support: 0 });
   game.start();
   assert.deepEqual(game.inventory, { bomb: 2, support: 1 });
 });
@@ -239,6 +239,7 @@ test('continuation buttons stay within the screen, do not overlap, and inventory
   const game = playing();
   game.home();
   const renderer = Object.create(Renderer.prototype);
+  renderer.rewardOffer = null;
   for (const state of ['menu', 'gameover']) {
     game.state = state;
     const buttons = renderer.getButtons(game);
@@ -251,7 +252,7 @@ test('continuation buttons stay within the screen, do not overlap, and inventory
   game.state = 'playing';
   game.bombCharges = 0;
   game.supportCharges = 0;
-  assert.ok(renderer.abilityButtons(game).every(button => button.disabled));
+  assert.ok(renderer.abilityButtons(game).every(button => !button.disabled), 'spent skills must still open the advertised acquisition panel');
   game.setInventory({ bomb: 2, support: 1 });
   assert.ok(renderer.abilityButtons(game).every(button => !button.disabled));
   assert.equal(renderer.abilityButtons(game).find(button => button.id === 'bomb').status, '余量 2');

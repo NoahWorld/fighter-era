@@ -190,10 +190,48 @@ async function simulateWechatApi(options = {}) {
     assert.equal(sandbox.GameGlobal.fighterEra.ready, true, 'initialization must wait for decoded images');
   }
   return { game, cloud: sandbox.GameGlobal.fighterEra.cloud, frame, touch, press, release, handlers, canvas, diagnostics, toasts, storage, writes, images, modals, loadingMessages, loadImages, logs, packageRequests, completePackage, failPackage, expirePackage,
+    get renderer() { return sandbox.GameGlobal.fighterEra.renderer; },
     get ready() { return sandbox.GameGlobal.fighterEra.ready; },
     get hasFrame() { return queuedFrame !== null; }
   };
 }
+
+test('WeChat empty consumables pause for unavailable rewards without consuming or granting inventory', async () => {
+  const app = await simulateWechatApi();
+  app.press('start'); finishLaunch(app.game); app.release();
+  app.press('bomb'); app.release();
+  for (let i = 0; i < 5; i++) app.game.update(.2);
+  assert.equal(app.game.bombCharges, 0);
+  app.press('bomb');
+  assert.equal(app.game.state, 'paused');
+  assert.equal(app.renderer.getButtons(app.game).find(button => button.id === 'reward:ad').disabled, true);
+  assert.equal(app.renderer.getButtons(app.game).find(button => button.id === 'reward:purchase').disabled, true);
+  app.release(); app.press('reward:ad'); app.release();
+  assert.equal(app.game.state, 'paused');
+  assert.equal(app.game.bombCharges, 0);
+  assert.equal(app.game.inventory.bomb, 0);
+  app.press('reward:close');
+  assert.equal(app.game.state, 'playing');
+  assert.equal(app.game.bombCharges, 0);
+});
+
+test('WeChat reward offer cannot resume after backgrounding or revive a dead run', async () => {
+  const app = await simulateWechatApi();
+  app.press('start'); finishLaunch(app.game); app.release();
+  app.game.supportCharges = 0;
+  app.press('support'); app.release();
+  app.handlers.Hide(); app.handlers.Show();
+  app.press('reward:close'); app.release();
+  assert.equal(app.game.state, 'paused');
+  app.press('resume'); app.release();
+  app.game.player.hp = 1; app.game.player.invincible = 0; app.game.hurt();
+  for (let i = 0; i < 13; i++) app.game.update(.2);
+  assert.equal(app.game.state, 'gameover');
+  app.press('revive'); app.release(); app.press('reward:close');
+  assert.equal(app.game.state, 'gameover');
+  assert.equal(app.game.getCheckpoint(), null);
+  assert.equal(app.game.continueRun(), false);
+});
 
 // Existing combat tests start after the independently tested launch sequence.
 function finishLaunch(game) {
@@ -763,7 +801,7 @@ test('WeChat API simulation: bomb clears enemies, preserves loot, and persists e
   assert.equal(app.diagnostics.length, 0);
 });
 
-test('WeChat API simulation: ability controls only exist during combat and replenish after a BOSS', async () => {
+test('WeChat API simulation: ability controls only exist during combat and BOSS clearance does not replenish free uses', async () => {
   const app = await simulateWechatApi();
   app.press('start');
   app.release();
@@ -786,11 +824,15 @@ test('WeChat API simulation: ability controls only exist during combat and reple
   app.release();
   assert.equal(app.game.stage, 1);
   assert.equal(app.game.state, 'playing');
-  assert.equal(app.game.supportCharges, 1);
-  assert.equal(app.game.bombCharges, 1);
+  assert.equal(app.game.supportCharges, 0);
+  assert.equal(app.game.bombCharges, 0);
   app.press('support');
   app.release();
-  assert.equal(app.game.allies.length, 2);
+  assert.equal(app.game.state, 'paused');
+  assert.equal(app.game.allies.length, 0);
+  app.press('reward:close');
+  app.release();
+  assert.equal(app.game.state, 'playing');
   app.frame(0);
   assert.equal(app.diagnostics.length, 0);
 });

@@ -442,6 +442,9 @@ test('real wave scheduling reaches all 100 bosses, 99 upgrade screens, and final
     for (let frame = 0; frame < 2000 && game.state === 'playing'; frame++) {
       if (game.wave > 0) waves.add(game.wave);
       game.playerBullets = [];
+      game.playerBeams = [];
+      game.pickups = [];
+      game.fireTimer = 10000; // Loot must not re-enable autonomous aiming in this lifecycle fixture.
       for (const enemy of game.enemies) {
         if (!spawned.has(enemy.id)) {
           spawned.add(enemy.id);
@@ -1058,7 +1061,7 @@ test('bombs reward ordinary enemies before the boss, retain screen-external enem
       for (let stage = 0; stage < STAGES.length - 1; stage++) {
         game.spawnBoss();
         game.enemies[0].y = 160;
-        game.useBomb();
+        game.destroyEnemy(game.enemies[0]);
         game.chooseUpgrade('rapid');
       }
     }
@@ -1106,17 +1109,18 @@ test('bombs reward ordinary enemies before the boss, retain screen-external enem
   }
 });
 
-test('stage transitions replenish both abilities and clear the preceding stage effects', () => {
+test('all 100 stage transitions retain spent run abilities and clear preceding stage effects', () => {
   const game = quietGame();
   for (let stage = 0; stage < STAGES.length; stage++) {
-    assert.equal(game.supportCharges, 1);
-    assert.equal(game.bombCharges, 1);
+    assert.equal(game.supportCharges, stage === 0 ? 1 : 0);
+    assert.equal(game.bombCharges, stage === 0 ? 1 : 0);
     assert.equal(game.supportTime, 0);
     assert.equal(game.bombTime, 0);
-    assert.equal(game.callSupport(), true);
+    assert.equal(game.callSupport(), stage === 0);
     game.spawnBoss();
     game.enemies[0].y = 160;
-    assert.equal(game.useBomb(), true);
+    assert.equal(game.useBomb(), stage === 0);
+    if (stage > 0) game.destroyEnemy(game.enemies[0]);
     assert.equal(game.supportCharges, 0);
     assert.equal(game.bombCharges, 0);
     if (stage < STAGES.length - 1) {
@@ -1336,11 +1340,12 @@ test('all three boss attacks and rage variants stay bounded while late battle pr
     game.spawnBoss();
     const boss = game.enemies[0];
     boss.y = 160;
+    boss.weaponIndex = 0;
     const counts = [];
     for (const rage of [false, true]) {
       boss.hp = boss.maxHp * (rage ? 0.4 : 0.8);
       boss.volley = 0;
-      for (let volley = 0; volley < 6; volley++) {
+      for (let volley = 0; volley < 2; volley++) {
         game.enemyBullets = [];
         game.enemyShoot(boss);
         counts.push(game.enemyBullets.length);

@@ -14,6 +14,8 @@ const RUN_KEY = 'fighter-era.run.v2';
 
 async function browser(storage = new Map()) {
   const warnings = [], alerts = [];
+  const handlers = {};
+  let queuedFrame;
   class Node {
     constructor() {
       this.children = []; this.dataset = {}; this.style = {}; this.handlers = {};
@@ -43,16 +45,27 @@ async function browser(storage = new Map()) {
     createElement: () => new Node(), addEventListener() {}, activeElement: null };
   const window = { Shooter, ShooterRenderer, ShooterAssets: {
     loadAssets: async () => ({ frames, images: Object.fromEntries(Object.keys(manifest).map(key => [key, {}])) })
-  }, addEventListener() {}, devicePixelRatio: 1, alert: value => alerts.push(value) };
+  }, addEventListener: (name, callback) => { handlers[name] = callback; }, devicePixelRatio: 1, alert: value => alerts.push(value) };
   const localStorage = { getItem: key => storage.has(key) ? storage.get(key) : null,
     setItem: (key, value) => storage.set(key, value) };
   await vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/browser.js'), 'utf8'), {
-    window, document, localStorage, Image: class {}, requestAnimationFrame: () => 1,
+    window, document, localStorage, Image: class {}, requestAnimationFrame: callback => { queuedFrame = callback; return 1; },
     cancelAnimationFrame() {}, console: { info() {}, warn: (...args) => warnings.push(args), error: (...args) => warnings.push(args) }
   });
   assert.equal(alerts.length, 0, alerts.join('\n'));
   assert.ok(window.fighterEra);
-  return { ...window.fighterEra, ids, warnings, storage };
+  // Input/storage integration is tested here; renderer pixels are checked separately.
+  window.fighterEra.renderer.ctx.setTransform = () => {};
+  window.fighterEra.renderer.draw = () => {};
+  function frame(timestamp) { queuedFrame(timestamp); assert.equal(alerts.length, 0, alerts.join('\n')); }
+  function press(id) {
+    const button = ids.get('game-buttons').children.find(item => item.dataset.buttonId === id);
+    assert.ok(button, 'expected a visible ' + id + ' button');
+    assert.equal(button.disabled, false, id + ' must be enabled');
+    button.handlers.click({ detail: 0, stopPropagation() {} });
+  }
+  function key(value) { handlers.keydown({ key: value, repeat: false, preventDefault() {} }); }
+  return { ...window.fighterEra, ids, warnings, storage, handlers, frame, press, key };
 }
 
 function aliveRecord(totalXp) {
@@ -116,4 +129,44 @@ test('browser corrupt run storage stays intact and its failure remains visible',
   assert.ok(app.warnings.length);
   app.game.start(); app.game.addExperience(60);
   assert.equal(storage.get(RUN_KEY), bad);
+});
+
+test('browser empty consumables offer only unavailable rewards and cannot grant extra use', async () => {
+  const app = await browser();
+  app.press('start'); launch(app.game); app.frame(0);
+  app.press('bomb');
+  for (let i = 0; i < 5; i++) app.game.update(.2);
+  app.frame(100);
+  assert.equal(app.game.bombCharges, 0);
+  app.press('bomb');
+  assert.equal(app.game.state, 'paused');
+  const buttons = app.ids.get('game-buttons').children;
+  assert.equal(buttons.find(item => item.dataset.buttonId === 'reward:ad').disabled, true);
+  assert.equal(buttons.find(item => item.dataset.buttonId === 'reward:purchase').disabled, true);
+  app.key('p'); app.key('b'); app.frame(200);
+  assert.equal(app.game.state, 'paused', 'keyboard cannot resume underneath the offer');
+  assert.equal(app.game.bombCharges, 0);
+  app.press('reward:close');
+  assert.equal(app.game.state, 'playing');
+  assert.equal(app.game.bombCharges, 0);
+});
+
+test('browser reward offers respect background pause and never resurrect a defeated run', async () => {
+  const app = await browser();
+  app.press('start'); launch(app.game); app.frame(0);
+  app.game.supportCharges = 0;
+  app.key('r');
+  assert.equal(app.game.state, 'paused');
+  app.handlers.blur(); app.press('reward:close');
+  assert.equal(app.game.state, 'paused', 'closing after blur requires explicit resume');
+  app.press('resume');
+  app.game.player.hp = 1; app.game.player.invincible = 0; app.game.hurt();
+  for (let i = 0; i < 13; i++) app.game.update(.2);
+  app.frame(100);
+  assert.equal(app.game.state, 'gameover');
+  app.press('revive'); app.press('reward:close');
+  assert.equal(app.game.state, 'gameover');
+  assert.equal(app.game.progression.level, 1);
+  assert.equal(app.game.getCheckpoint(), null);
+  assert.equal(app.game.continueRun(), false);
 });

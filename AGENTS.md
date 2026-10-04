@@ -4,7 +4,7 @@
 
 产品名「战机时代 / FIGHTER ERA」。零依赖原生 Canvas 竖屏射击客户端，桌面采用深空蓝和金色成长档案界面，手机显示完整游戏。浏览器与微信小游戏共享引擎、渲染器和本地素材；逻辑画布固定 405 × 720。网站 `/` 为 `index.html` 单文件字数统计工具，输入只在浏览器即时处理，不上传或保存；`/game` 和 `/game/` 为 `game.html` → `src/browser.js`，页面以根目录 base 解析图集，不能因尾斜杠导致素材请求错误。微信入口 `game.js`，配置 `game.json` 与 `project.config.json`；两个 HTML 均排除出微信包。用户提供的六张透明 PNG 图集在 `assets/`，新增两张位于 `assets/expansion/` 微信分包；客户端不引入未经任务需要的远程素材、字体或构建依赖。账号后端独立位于 `backend/`，使用 Node.js 22、Fastify 5、PostgreSQL 17；不能把后端依赖或密钥打入微信包。
 
-游戏画面包含星空、远景行星、战舰（`warship`）和敌对行星（`planet`）。100 关分为 10 个星域，每 10 关切换一套背景配色；固定 84 颗星点分层向下循环，星云与远景天体完全离屏后复用，不添加大图、逐帧渐变、模糊或离屏画布分配。背景时钟在菜单、登机、战斗之间连续，暂停和结果页面冻结。左侧生命条使用固定高度、比例和数值表达生命，不随本局等级增加而无限延长。开始按钮文案为「驾驶战机出击」。
+游戏画面包含星空、远景行星、战舰（`warship`）和敌对行星（`planet`）。100 关分为 10 个星域，分别采用航道、星环、陨石带、轨道遗迹、网格星港、双星、星云裂隙、螺旋星系、冰晶和恒星风结构；每关另有布局、角度、密度与位置配置，不能只换颜色。固定 84 颗星点、18 个装饰对象与 4 组螺旋路径复用，分层向下循环；不添加背景大图、逐帧渐变、模糊或离屏画布分配。两平台使用同一 Canvas 背景，不依赖浏览器 CSS。背景时钟在菜单、登机、战斗之间连续，暂停和结果页面冻结。左侧生命条使用固定高度、比例和数值表达生命，不随本局等级增加而无限延长。开始按钮文案为「驾驶战机出击」。
 
 ## 契约
 
@@ -17,22 +17,23 @@
 - BOSS 登场启动 `bossWarningTime = bossWarningDuration = 2.4`，渲染三次柔和红色边缘脉冲并优先显示「BOSS 出现」。计时只随战斗推进、暂停冻结；BOSS 击败、己方致命伤、结算、回机库及新局须清理。`boss` 事件包含 `phase: appeared / defeated`、`stage`、`enemyId`，同一 BOSS 的击败事件只能发一次。升级与最终胜利分别明确显示 BOSS 已击败，失败明确显示我方战机已被击败。
 - `src/assets.js` 使用 UMD 导出 `{ manifest, frames, loadAssets }`：浏览器 `window.ShooterAssets`；`await loadAssets(createImage)` 返回 `{images, frames}`。浏览器传 `() => new Image()`，微信传 `() => wx.createImage()`。六张图集须全部解码并验证尺寸后才允许渲染与开局；加载中明确显示状态，失败或超时给出素材路径并停止，不用旧矢量图静默兜底。微信先 `wx.loadSubpackage({name:'fleet-assets'})`，显示进度；失败、无效任务或 30 秒超时均停止。资源分包也须保留 `assets/expansion/game.js` 入口，符合本机官方编译器要求。分包成功后再解码图片；窗口改变仍保留当前加载阶段。主包和扩展包分别检查资源预算，不能因新增素材直接放宽主包限制。
 - `src/renderer.js` 使用 UMD 导出 `{ Renderer }`：浏览器 `window.ShooterRenderer`；实例 `new Renderer(ctx, assets)`，`draw(game, renderTimeSeconds)`、`getButtons(game)`。用 `drawImage` 源矩形取精灵，保留原始宽高比。邻近轮廓重叠的帧可包含 `regions`，每项是绝对源坐标 `{x,y,w,h}`，在帧内且互不重叠，渲染共享同一比例与原点；不能把邻架机头/尾焰带入当前帧。图集仅做 PNG 无损重新压缩，必须保留原始 RGBA 像素与透明度。非行星敌人必须有明确 `appearance:{sheet,index,rotation}`，禁止按敌人 ID 猜素材；新 `enemyVariants` 10 款朝上，用 π 旋转，`fleet` 10 款朝右，用 π/2 旋转。BOSS 的 `form` 明确为 `fighter / warship`，血条放在旋转后的高度之上，敌方整体保持红色色系。
-- 按钮布局返回 `{ id, label, x, y, w, h, disabled }`，单位为逻辑坐标。ID 为 `start / restart / continue / pause / resume / home / support / bomb / upgrade:spread / upgrade:rapid / upgrade:repair`。浏览器真实透明 DOM 按钮必须与这些几何数据及禁用状态同步，且键盘焦点可见；按 ID 复用节点，倒计时更新不能替换正在接收触摸的节点。微信禁用按钮仍占用本次触摸，不触发技能、不穿透成拖动。R / B 分别为浏览器救援 / 轰炸快捷键，只在战斗中响应首次按下。
+- 按钮布局返回 `{ id, label, x, y, w, h, disabled }`，单位为逻辑坐标。ID 为 `start / restart / continue / pause / resume / home / support / bomb / revive / reward:ad / reward:purchase / reward:close / upgrade:spread / upgrade:rapid / upgrade:repair`。浏览器真实透明 DOM 按钮必须与这些几何数据及禁用状态同步，且键盘焦点可见；按 ID 复用节点，倒计时更新不能替换正在接收触摸的节点。微信禁用按钮仍占用本次触摸，不触发技能、不穿透成拖动。R / B 分别为浏览器救援 / 轰炸快捷键，只在战斗中响应首次按下。
+- `player.weapon` 为 `gun / laser / homing / explosive`；拾取武器立即切换，武器等级另表示火力强化。光柱按时间伤害并穿透多目标，追踪弹有限转向追踪存活目标，爆炸弹范围伤害；敌机、战舰、行星及 BOSS 按关卡搭配对应攻击。敌方光柱先锁定预警再发射；弹幕、光柱和爆炸特效必须受数量上限约束，暂停、死亡与过关均不能继续攻击。
 - 平台负责 ctx 的 DPR / 黑边映射；渲染器使用逻辑坐标，不重置为物理屏幕尺寸。正常帧间隔不超过 0.25 秒时必须完整传给引擎，由引擎细分模拟，不能截短时间导致低帧率游戏变慢。超过 0.25 秒时，`playing / launching / ejecting` 状态显式暂停、重置时钟并给出诊断；菜单、升级、结算等非战斗状态只重置时钟，不把正常空闲调度当故障。暂停恢复时重置时钟。
 - 只跟踪第一根有效手指；相对拖动、按钮优先、释放后自动开火。切后台 / 失焦暂停，回前台不自动继续。
-- 每关救援与轰炸弹各一次，`prepareStage()` 补满 `supportCharges / bombCharges`。`callSupport()` / `useBomb()` 在非战斗或用尽时明确返回 `false`，成功返回 `true`。救援生成两架 `allies`，`supportTime / supportDuration` 表达 8 秒剩余 / 总时长，含入场和撤离；援军子弹沿用 `playerBullets` 碰撞路径，带 `source: 'support'`。暂停冻结援军，过关或己方被击败终止救援。
-- 额外道具库存通过 `setInventory({bomb,support})` 更新，与每关免费次数分开。默认 `callSupport()` / `useBomb()` 只消耗免费次数；`source='inventory'` 仅供已收到服务端扣除确认的平台调用，不能自行把免费次数不足当作库存消费。技能按钮显示免费次数与库存之和；救援或轰炸效果进行中不得再次扣除同类道具。
+- 每局救援与轰炸弹各免费一次；只在新局初始化 `supportCharges / bombCharges`，`prepareStage()` 与续关不补充。`callSupport()` / `useBomb()` 在非战斗或用尽时明确返回 `false`，成功返回 `true`。救援生成两架 `allies`，`supportTime / supportDuration` 表达 8 秒剩余 / 总时长，含入场和撤离；援军子弹沿用 `playerBullets` 碰撞路径，带 `source: 'support'`。暂停冻结援军，过关或己方被击败终止救援。
+- 额外道具库存通过 `setInventory({bomb,support})` 更新，与每局免费次数分开。默认 `callSupport()` / `useBomb()` 只消耗免费次数；`source='inventory'` 仅供已收到服务端扣除确认的平台调用，不能自行把免费次数不足当作库存消费。技能按钮显示免费次数与库存之和；救援或轰炸效果进行中不得再次扣除同类道具。
 - 轰炸立即击败所有与画面相交的活敌（包括 BOSS），清除所有敌弹；保留我方、援军、已有增益、拾取物和本次击杀掉落。屏外敌人不计奖励；BOSS 最后处理，所有击杀均按正常规则发经验与结算事件，不能重复奖励。`bombTime / bombDuration` 为 0.9 秒特效；升级和胜利面板下仍衰减此特效，不能推进冻结的战斗，暂停时冻结。全局爆炸粒子最多 320 个，批量清屏不得无限堆积。
 
 ## 肉鸽成长与存档
 
 - 每次新出击从第 1 关、Lv.1、零经验和基础火力开始。本局最多 100 关；死亡立即清空经验、等级、武器强化和续关点，不等待 2.6 秒弹射动画结束；最终胜利也结束本局成长。最高分和历史通关记录仅作为成绩，不增强下一局。返回机库、暂停或关闭时仍存活的对局可继续。
-- 致命伤前的 `resultProgression` 与战机外观只用于弹射及结算展示，不能写回 `getProfile()` 或作为复活授权。`gameover / victory` 不能安装正生命续关点；`continueRun()` 只在菜单且存在存活存档时成功。目前真实广告和充值未接入，失败界面只说明待开放，不提供假广告或免费复活按钮。未来续命必须先设计并验证服务端奖励资格，不能把旧存档直接装回。
+- 致命伤前的 `resultProgression` 与战机外观只用于弹射及结算展示，不能写回 `getProfile()` 或作为复活授权。`gameover / victory` 不能安装正生命续关点；`continueRun()` 只在菜单且存在存活存档时成功。目前真实广告和充值未接入。失败界面的原地复活和用尽的道具按钮打开获取面板，广告与充值选项禁用并标注待开通，不发放奖励、不恢复生命。面板打开时暂停战斗，关闭只恢复原先仍存活的战斗；后台或失焦后须手动继续。未来续命必须先设计并验证服务端奖励资格，不能把旧存档直接装回。
 - `profile` 为 `{version:2,totalXp:nonnegativeSafeInteger}`；`game.progression` 由本局经验派生。四个称号为 Lv.1 游隼、Lv.3 破晓、Lv.6 雷霆、Lv.10 星曜；十款外观随本局 Lv.1–10 解锁，索引 `Math.min(level,10)-1`。没有玩法等级上限，但序列化值受安全整数范围约束。最低射击间隔 0.07 秒，达上限后升级改为 +0.4 伤害。
 - 本地成长与续关必须原子保存为同一个 `fighter-era.run.v2` 值：`{version:2,profile,checkpoint}`。浏览器保存 JSON 字符串，微信保存对象；每次 `progression / checkpoint / gameover / victory` 以及终局 `state:ejecting/victory/gameover` 同步保存；终局状态必须先写本机零档和最高分，再调用云队列或可选音效，避免后续异常阻止死亡落盘。不得分开写经验和续关，以免死亡半写导致复活。没有存活 checkpoint 时经验必须为零。
 - 原 `fighter-era.profile / fighter-era.checkpoint` 旧版键保留但不导入本局，发现后明确提示肉鸽规则更新。最高分继续使用 `neon-wing.best-score`，致命伤或最终胜利时立即写入更高纪录。
-- 续关点为严格版本 2：`phase / stage / seed / randomState / entityId / totalTime / score / kills / runStartXp / totalXp / player:{hp,maxHp,weaponLevel} / fireInterval / damageBonus / freeCharges:{bomb,support}`。`runStartXp=0`，`totalXp` 是关卡边界经验，不能高于档案经验。构造时同时提供 profile 和 checkpoint；孤立经验档案不建立存活对局。继续时回退到边界经验，和边界生命、火力、分数一致，不重复刷该关已获得的经验。
-- `phase='stage'` 从关卡开头重新生成波次；`phase='upgrade'` 恢复 BOSS 击败后的选择界面，不重复奖励。只接受正生命，末关不能保存升级界面。开局、BOSS 击败、选升级、使用免费技能更新续关；同关续关保留已消耗免费次数，进入下一关才补满。`checkpoint` 事件可先于状态变化，平台不能按旧状态猜保存结果。
+- 续关点为严格版本 2：`phase / stage / seed / randomState / entityId / totalTime / score / kills / runStartXp / totalXp / player:{hp,maxHp,weaponLevel,weapon} / fireInterval / damageBonus / freeCharges:{bomb,support}`。`runStartXp=0`，`totalXp` 是关卡边界经验，不能高于档案经验。构造时同时提供 profile 和 checkpoint；孤立经验档案不建立存活对局。继续时回退到边界经验，和边界生命、火力、分数一致，不重复刷该关已获得的经验。
+- `phase='stage'` 从关卡开头重新生成波次；`phase='upgrade'` 恢复 BOSS 击败后的选择界面，不重复奖励。只接受正生命，末关不能保存升级界面。开局、BOSS 击败、选升级、使用免费技能更新续关；续关及过关保留已消耗免费次数，仅新出击重新获得各一次。拾取切换武器更新边界的 weapon 与 weaponLevel，不把关中经验、生命或分数写入边界。旧版 player 恰好包含 hp/maxHp/weaponLevel 时显式迁移为 gun；未知武器或多余字段拒绝。`checkpoint` 事件可先于状态变化，平台不能按旧状态猜保存结果。
 - 存档损坏、读取或写入失败须明确诊断并禁用该键后续写入，保留原数据。无云服务时可在明确临时游玩提示下使用初始档案；云上下文或队列失败必须停止入口，不能覆盖未知归属的记录。最高分存储单独管理失败状态。
 
 ## 云存档与后端
@@ -43,8 +44,9 @@
 - `WechatCloud.prepare()` 在登录前验证 `fighter-era.cloud-context`（META），登录后先发送已有 outbox 再读取当前账号。首次导入必须同时满足 META 为空、outbox 的 `accountId` 为 `null`、服务端 `migrationAllowed=true`；只有从未绑定账号的本机记录有资格导入。已绑定账号的本机镜像永不再次导入，切换账号和同账号重登均不得放宽。成功 prepare 必须先同步写 META 绑定身份，再由入口写云档镜像；上下文校验、队列发送或绑定写入失败都停止入口并保留原本机记录，不能把中断写入后的云档误判为未绑定本机记录。
 - 对局 `stage` 和 checkpoint `stage` 从 0 到 99；`stageResults.stage` 与 `highestClearedStage` 从 1 到 100。失败或胜利的对局不可再修改；新开与续关都使用新 `run.id`。同一对局同一关最多计一次通关；恢复升级选择不把上一对局的 BOSS 再算一次通关。终局快照必须在下一局开始前同步入队，不能让下一局覆盖终局。
 - 云待发送队列使用 `fighter-era.cloud-outbox`，上下文使用 `fighter-era.cloud-context`，均为版本 2。旧版 outbox 先完整归档到 `fighter-era.cloud-outbox.legacy-v1`，丢弃旧规则游戏提交但保留账号归属和未确认道具扣除请求；归档失败或已有不同归档必须报错停止。旧 META 保留账号约束但不能恢复旧对局上下文。每次 progression、checkpoint、终局以及切后台都先同步保存队列；请求在边界或每 10 秒异步发送，未知结果保留原 `mutationId` 与正文重试。队列最多保留 100 个待同步对局，不能静默丢弃超限记录。存储失败、账号不匹配、版本冲突和网络错误都必须可见；网络重试显示次数。`apiBase` 已配置但云登录失败时明确提示错误并停止开局，避免新进度后来被旧云档覆盖；只有空 `apiBase` 才是默认本机模式。已有云账号与本机经验不自动相加。
-- 每关免费技能不是账号库存，不发道具流水。额外 `bomb / support` 库存通过事务扣除并记录 `inventory_ledger`，游戏先暂停、收到扣除确认后才使用；网络结果未知时保留请求，不能再次扣除或假装成功。库存与存档版本分别维护，普通存档不能修改库存。
+- 每局免费技能不是账号库存，不发道具流水。额外 `bomb / support` 库存通过事务扣除并记录 `inventory_ledger`，游戏先暂停、收到扣除确认后才使用；网络结果未知时保留请求，不能再次扣除或假装成功。库存与存档版本分别维护，普通存档不能修改库存。
 - 已建立支付订单与广告奖励记录表及内部幂等发放方法；付款、广告播放、回调验签、充值商品、广告位和外部发奖接口均未启用。后续必须先确定平台能力与服务端验证流程；不能因客户端自称付款成功或看完广告就发道具，不能把预留结构描述为已开通充值。
+- `003_run_free_charges.sql` 为前向迁移，为每个对局编号持久保存免费炸弹与支援剩余值；同一编号只能减少，切回旧编号不能回涨，续关新编号须从当前合法续关关卡开始，并继承已消耗次数；终结编号不能重新启用。当前协议不能区分第 1 关换编号的零经验续关与真正新出击，此处校验不代表完整反作弊。历史行默认 1 仅作迁移起点，首次合法保存后受持久值约束。广告、充值与复活权限不可由普通存档字段提交。
 - `002_roguelike_saves.sql` 为前向迁移：清空旧版账号经验与续关，并将旧存活对局标记结束，保留身份、库存、最高分及通关记录；旧版提交不可恢复。服务启动前执行事务迁移并核验摘要，失败即停止；已应用迁移不得改写。日志保留请求编号、内部用户编号、对局编号和版本，不记录 AppSecret、token、登录 code 或授权头。`GET /health/ready` 可报告数据库 ready 同时微信 pending_configuration，不能据此宣称真实微信登录已可用。
 
 ## 独立服务器与备份
@@ -67,6 +69,8 @@
 严重错误应停止循环并显示上下文。存储 / 音频属于可选能力，失败时明确向玩家提示并输出原始异常，不能静默 catch。浏览器调试入口 `window.fighterEra`，微信入口 `GameGlobal.fighterEra`；旧 `neonWing` 别名暂保留兼容。日志记录 `state / stage / boss / cinematic / ability / upgrade / levelup / gameover / victory`；`ability` 包含类型、阶段（called / ended / detonated）、关卡与剩余次数或结束原因，轰炸另记击杀目标数及清除敌弹数。微信菜单与按钮触摸额外记录 `control`，包含逻辑坐标、按钮、禁用状态和视口，便于诊断输入映射。不要记录每次 `progression / shot / hit` 或拖动移动。避免逐帧日志以及为单个页面状态编写掩盖根因的补丁。
 
 微信版目前无音频。`project.config.json` 中 AppID 由开发者工具和项目账号管理，不要用 `touristappid` 覆盖用户已选定的测试号或正式 AppID；测试身份不能代替正式发布身份。变更平台契约、运行方式、验证范围或长期规则时，同步更新本文件和 README。
+
+武器、背景与免费次数版本于 2026-10-04 通过客户端 166 项、服务器后端 46 项测试（含 24 项真实 PostgreSQL），0 失败、0 跳过。实际浏览器在已部署 `/game` 新出击、使用免费炸弹、死亡清零并打开广告/充值待开通的复活面板，控制台无警告或错误。独立固定场景用实际渲染器检查十类星域与四种武器，不代表逐关实战通过 100 关。服务器已应用 003 迁移，专用测试库已删除，生产用户数仍为 0；13 项公网资源内容与本地一致，5 项私有路径 404。DNS 保持备案暂停，通过指定 IP 的严格 HTTPS 验证两域名；服务器仅更新游戏静态资源和 API，原应用仍运行且 HTTP 200。详见部署说明。本次微信为 API 模拟，未重新验证开发者工具、真机、真实广告或付款，不宣称真机性能保证。
 
 肉鸽版本于 2026-10-03 通过客户端 143 项自动测试、服务器后端 26 项测试（7 项单元、19 项真实 PostgreSQL；均 0 失败、0 跳过）。实际浏览器验证死亡后刷新不能续关，以及存活「出击 → 暂停 → 回机库 → 刷新 → 继续第 1 关」；检查时控制台无警告或错误。服务器 web/API/数据库健康；已在对应阿里云轻量应用服务器防火墙添加 TCP 8080、来源 0.0.0.0/0，原有规则未改动。公网 http://47.116.38.160:8080/ 可打开并出击，12 项公开资源均 HTTP 200 且与本地发布内容一致，私有路径返回 404。浏览器试玩为本机存档。此次微信验证为 API 模拟，未重新完成开发者工具或真机测试。
 

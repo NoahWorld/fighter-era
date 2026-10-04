@@ -6,6 +6,8 @@
   const WIDTH = 405;
   const HEIGHT = 720;
   const MAX_PARTICLES = 320;
+  const WEAPONS = Object.freeze(['gun', 'laser', 'homing', 'explosive']);
+  const LIMITS = Object.freeze({ playerBullets: 160, enemyBullets: 220, beams: 12, effects: 48, pickups: 40, enemies: 80, particles: MAX_PARTICLES });
   const MIN_FIRE_INTERVAL = 0.07;
   const CHAPTERS = Object.freeze([
     '星港边境', '碎星航道', '赤焰星云', '环星禁区', '幽蓝星河',
@@ -41,6 +43,12 @@
   }));
   const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
   const collides = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2 < (a.r + b.r) ** 2;
+  const rayCollides = (beam, target) => {
+    const dx = target.x - beam.x, dy = target.y - beam.y;
+    const along = clamp(dx * Math.cos(beam.angle) + dy * Math.sin(beam.angle), 0, beam.length);
+    return (dx - Math.cos(beam.angle) * along) ** 2 + (dy - Math.sin(beam.angle) * along) ** 2 < (target.r + beam.width / 2) ** 2;
+  };
+  const boundedPush = (items, item, limit) => { if (items.length >= limit) return false; items.push(item); return true; };
   const experienceForLevel = level => 20 * (level - 1) ** 2 + 40 * (level - 1);
   const MODELS = [
     { level: 1, title: '游隼' }, { level: 3, title: '破晓' },
@@ -64,7 +72,10 @@
   function validateCheckpoint(value) {
     if (value === null) return null;
     exactKeys(value, ['version', 'phase', 'stage', 'seed', 'randomState', 'entityId', 'totalTime', 'score', 'kills', 'runStartXp', 'totalXp', 'player', 'fireInterval', 'damageBonus', 'freeCharges'], 'checkpoint');
-    exactKeys(value.player, ['hp', 'maxHp', 'weaponLevel'], 'checkpoint player');
+    // Published v2 saves predate weapon pickups. Their exact three-field shape
+    // explicitly means the original gun; unknown fields and weapons still fail.
+    const legacyGun = value.player && !Object.prototype.hasOwnProperty.call(value.player, 'weapon');
+    exactKeys(value.player, legacyGun ? ['hp', 'maxHp', 'weaponLevel'] : ['hp', 'maxHp', 'weaponLevel', 'weapon'], 'checkpoint player');
     exactKeys(value.freeCharges, ['bomb', 'support'], 'checkpoint freeCharges');
     if (value.version !== 2 || !['stage', 'upgrade'].includes(value.phase)
       || !Number.isInteger(value.stage) || value.stage < 0 || value.stage >= STAGES.length
@@ -80,6 +91,7 @@
     if (!Number.isSafeInteger(value.player.hp) || !Number.isSafeInteger(value.player.maxHp)
       || value.player.hp < 1 || value.player.maxHp < value.player.hp
       || !Number.isInteger(value.player.weaponLevel) || value.player.weaponLevel < 1 || value.player.weaponLevel > 3) throw new RangeError('Invalid checkpoint player stats');
+    if (!legacyGun && !WEAPONS.includes(value.player.weapon)) throw new RangeError('Invalid checkpoint player weapon');
     if (!Number.isFinite(value.fireInterval) || value.fireInterval < MIN_FIRE_INTERVAL || value.fireInterval > 0.16
       || !Number.isFinite(value.damageBonus) || value.damageBonus < 0 || value.damageBonus > 40) throw new RangeError('Invalid checkpoint weapon stats');
     for (const item of ['bomb', 'support']) {
@@ -87,7 +99,7 @@
     }
     return { version: 2, phase: value.phase, stage: value.stage, seed: value.seed, randomState: value.randomState,
       entityId: value.entityId, totalTime: value.totalTime, score: value.score, kills: value.kills, runStartXp: value.runStartXp, totalXp: value.totalXp,
-      player: { ...value.player }, fireInterval: value.fireInterval, damageBonus: value.damageBonus, freeCharges: { ...value.freeCharges } };
+      player: { ...value.player, weapon: legacyGun ? 'gun' : value.player.weapon }, fireInterval: value.fireInterval, damageBonus: value.damageBonus, freeCharges: { ...value.freeCharges } };
   }
 
   class Game {
@@ -136,13 +148,18 @@
     captureCheckpoint(phase = 'stage', emit = true) {
       this.storeCheckpoint({ version: 2, phase, stage: this.stage, seed: this.seed >>> 0, randomState: this.randomState,
         entityId: this.id, totalTime: this.totalTime, score: this.score, kills: this.kills, runStartXp: this.runStartXp, totalXp: this.profile.totalXp,
-        player: { hp: this.player.hp, maxHp: this.player.maxHp, weaponLevel: this.player.weaponLevel },
+        player: { hp: this.player.hp, maxHp: this.player.maxHp, weaponLevel: this.player.weaponLevel, weapon: this.player.weapon },
         fireInterval: this.fireInterval, damageBonus: this.damageBonus,
         freeCharges: { bomb: this.bombCharges, support: this.supportCharges } }, emit);
     }
     updateCheckpointCharges() {
       if (!this._savedCheckpoint || this._savedCheckpoint.phase !== 'stage') throw new Error('No stage checkpoint for ability consumption');
       this.storeCheckpoint({ ...this._savedCheckpoint, freeCharges: { bomb: this.bombCharges, support: this.supportCharges } }, true);
+    }
+    updateCheckpointWeapon() {
+      if (!this._savedCheckpoint || this._savedCheckpoint.phase !== 'stage') throw new Error('No stage checkpoint for weapon pickup');
+      this.storeCheckpoint({ ...this._savedCheckpoint, player: { ...this._savedCheckpoint.player,
+        weapon: this.player.weapon, weaponLevel: this.player.weaponLevel } }, true);
     }
     setInventory(value) {
       exactKeys(value, ['bomb', 'support'], 'inventory');
@@ -197,6 +214,7 @@
       this.player.tier = 1;
       this.player.maxHp = 5;
       this.player.weaponLevel = 1;
+      this.player.weapon = 'gun';
       this.fireInterval = 0.16;
       this.damageBonus = 0;
       this.levelUpTime = 0;
@@ -223,7 +241,7 @@
       this.randomState = (Math.imul(this.randomState, 1664525) + 1013904223) >>> 0;
       return this.randomState / 4294967296;
     }
-    resetRun() {
+    resetRun(newRun = false) {
       this.randomState = this.seed >>> 0;
       this.id = 0;
       this.stage = 0;
@@ -246,7 +264,7 @@
       this.runStartXp = 0;
       this.resultProgression = null;
       const maxHp = 5 + Math.floor((this.progression.level - 1) / 5);
-      this.player = { x: WIDTH / 2, y: 596, r: 7, hp: maxHp, maxHp, invincible: 0, weaponLevel: 1, shield: 0,
+      this.player = { x: WIDTH / 2, y: 596, r: 7, hp: maxHp, maxHp, invincible: 0, weaponLevel: 1, weapon: 'gun', shield: 0,
         shipLevel: this.progression.level, tier: this.progression.tier };
       this.particles = [];
       this.upgradeOptions = [
@@ -255,6 +273,10 @@
         { id: 'repair', title: '装甲补给', description: '恢复 3 格装甲 · 上限增加 1 格' }
       ];
       this.damageBonus = 0;
+      // Only an explicit new run grants freebies. Menu resets and continued
+      // runs restore their existing allowance without minting another use.
+      this.supportCharges = newRun ? 1 : this._savedCheckpoint ? this._savedCheckpoint.freeCharges.support : 0;
+      this.bombCharges = newRun ? 1 : this._savedCheckpoint ? this._savedCheckpoint.freeCharges.bomb : 0;
       this.prepareStage();
     }
     prepareStage() {
@@ -269,14 +291,15 @@
       this.nextWave = 1.2;
       this.bossSpawned = false;
       this.bossWarningTime = 0;
-      this.supportCharges = 1;
-      this.bombCharges = 1;
       this.supportTime = 0;
       this.bombTime = 0;
       this.allies = [];
       this.enemies = [];
       this.playerBullets = [];
       this.enemyBullets = [];
+      this.playerBeams = [];
+      this.enemyBeams = [];
+      this.weaponEffects = [];
       this.pickups = [];
       this.fireTimer = 0;
       this.player.x = WIDTH / 2;
@@ -287,7 +310,7 @@
     }
     start() {
       this.setRunExperience(0);
-      this.resetRun();
+      this.resetRun(true);
       this.captureCheckpoint('stage', false);
       this.emit('progression', this.getProfile());
       this.emit('checkpoint', { checkpoint: this.getCheckpoint() });
@@ -378,7 +401,7 @@
         ally.fireTimer -= dt;
         if (ally.fireTimer <= 0) {
           const damage = (1 + (ally.shipLevel - 1) * 0.06 + this.damageBonus) * 0.9;
-          this.playerBullets.push({ x: ally.x, y: ally.y - 23, vx: 0, vy: -700, r: 3.5, damage, source: 'support' });
+          boundedPush(this.playerBullets, { x: ally.x, y: ally.y - 23, vx: 0, vy: -700, r: 3.5, damage, kind: 'gun', source: 'support' }, LIMITS.playerBullets);
           ally.fireTimer += 0.22;
         }
       }
@@ -392,6 +415,7 @@
         .sort((a, b) => Number(a.type === 'boss') - Number(b.type === 'boss'));
       const clearedBullets = this.enemyBullets.length;
       this.enemyBullets = [];
+      this.enemyBeams = [];
       this.emit('ability', { type: 'bomb', phase: 'detonated', stage: this.stage,
         charges: this.bombCharges, enemies: targets.length, clearedBullets,
         ...(source === 'inventory' ? { source } : {}) });
@@ -444,7 +468,10 @@
       this.damageFlash = Math.max(0, this.damageFlash - dt * 3);
       this.tickSupport(dt);
       this.fireTimer -= dt;
-      if (this.fireTimer <= 0) { this.shoot(); this.fireTimer += this.fireInterval; }
+      if (this.fireTimer <= 0) {
+        this.shoot();
+        this.fireTimer += this.fireInterval * ({ gun: 1, laser: 3, homing: 2, explosive: 2.5 }[this.player.weapon]);
+      }
 
       if (this.wave < this.waveCount && this.stageTime >= this.nextWave) {
         this.spawnWave();
@@ -484,11 +511,12 @@
           enemy.fireTimer = enemy.type === 'boss' ? (enemy.hp < enemy.maxHp / 2 ? config.bossRageInterval : config.bossFireInterval)
             : enemy.type === 'planet' ? config.planetFireInterval
               : enemy.type === 'warship' ? config.warshipFireInterval : config.fighterFireInterval;
+          if (enemy.lastWeapon === 'laser') enemy.fireTimer = Math.max(enemy.fireTimer, 1.65);
           if (enemy.type === 'planet') { enemy.aimLocked = false; enemy.charge = 0; }
         }
       }
-      for (const bullet of this.playerBullets) { bullet.x += bullet.vx * dt; bullet.y += bullet.vy * dt; }
-      for (const bullet of this.enemyBullets) { bullet.x += bullet.vx * dt; bullet.y += bullet.vy * dt; }
+      this.tickProjectiles(dt);
+      for (const effect of this.weaponEffects) effect.life -= dt;
       for (const particle of this.particles) {
         particle.x += particle.vx * dt;
         particle.y += particle.vy * dt;
@@ -507,10 +535,19 @@
         if (collides({ ...this.player, r: 19 }, pickup)) {
           pickup.collected = true;
           if (pickup.type === 'repair') this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1);
-          else if (this.player.weaponLevel < 3) this.player.weaponLevel++;
-          else this.score += 150;
+          else if (pickup.type === 'weapon') {
+            if (!WEAPONS.includes(pickup.weapon)) throw new RangeError('Unknown pickup weapon: ' + pickup.weapon);
+            this.player.weapon = pickup.weapon;
+            this.fireTimer = 0;
+            this.playerBeams = [];
+            this.updateCheckpointWeapon();
+          } else if (pickup.type === 'power') {
+            if (this.player.weaponLevel < 3) this.player.weaponLevel++;
+            else this.score += 150;
+            this.updateCheckpointWeapon();
+          } else throw new RangeError('Unknown pickup type: ' + pickup.type);
           this.burst(pickup.x, pickup.y, '#75ffe1', 12);
-          this.emit('pickup', { type: pickup.type });
+          this.emit('pickup', { type: pickup.type, ...(pickup.type === 'weapon' ? { weapon: pickup.weapon } : {}) });
         }
       }
 
@@ -519,6 +556,11 @@
         for (const enemy of this.enemies) {
           if (enemy.hp <= 0 || !collides(bullet, enemy)) continue;
           bullet.dead = true;
+          if (bullet.kind === 'explosive') {
+            this.explodePlayerBullet(bullet);
+            if (this.state !== 'playing') return;
+            break;
+          }
           enemy.hp -= bullet.damage;
           enemy.hit = 0.07;
           this.burst(bullet.x, bullet.y, '#96fff2', 2, 0.15);
@@ -530,7 +572,9 @@
           break;
         }
       }
+      if (!this.tickBeams(dt)) return;
       for (const bullet of this.enemyBullets) {
+        if (bullet.dead) continue;
         if (collides(bullet, this.player)) { bullet.dead = true; this.hurt(); }
         if (this.state !== 'playing') return;
       }
@@ -542,22 +586,120 @@
         }
       }
       this.enemies = this.enemies.filter(e => e.hp > 0 && e.y < HEIGHT + 70);
-      this.playerBullets = this.playerBullets.filter(b => !b.dead && b.y > -25 && b.x > -20 && b.x < WIDTH + 20);
+      this.playerBullets = this.playerBullets.filter(b => !b.dead && b.y > -25 && b.y < HEIGHT + 25 && b.x > -20 && b.x < WIDTH + 20);
       this.enemyBullets = this.enemyBullets.filter(b => !b.dead && b.y < HEIGHT + 25 && b.y > -60 && b.x > -25 && b.x < WIDTH + 25);
       this.particles = this.particles.filter(p => p.life > 0);
       this.pickups = this.pickups.filter(p => !p.collected && p.y < HEIGHT + 25);
+      this.weaponEffects = this.weaponEffects.filter(effect => effect.life > 0);
     }
 
     shoot() {
       if (this.state !== 'playing') return;
       const player = this.player;
       const damage = 1 + (player.shipLevel - 1) * .06 + this.damageBonus;
-      for (const x of [-7, 7]) this.playerBullets.push({ x: player.x + x, y: player.y - 25, vx: 0, vy: -650, r: 4, damage });
-      if (player.weaponLevel >= 2) {
-        for (const side of [-1, 1]) this.playerBullets.push({ x: player.x + side * 17, y: player.y - 9, vx: side * 96, vy: -625, r: 3.5, damage: damage * 0.75 });
+      if (player.weapon === 'laser') {
+        boundedPush(this.playerBeams, { x: player.x, y: player.y - 27, angle: -Math.PI / 2,
+          length: player.y, width: 10 + player.weaponLevel * 3, t: 0, warning: 0, duration: 0.22,
+          damagePerSecond: damage * (24 + player.weaponLevel * 3) }, LIMITS.beams);
+      } else if (player.weapon === 'homing') {
+        for (const side of [-1, 1]) boundedPush(this.playerBullets, { x: player.x + side * 14, y: player.y - 22,
+          vx: side * 70, vy: -420, r: 5, damage: damage * (1.8 + player.weaponLevel * 0.2),
+          kind: 'homing', turnRate: 3.4, life: 3.2 }, LIMITS.playerBullets);
+      } else if (player.weapon === 'explosive') {
+        boundedPush(this.playerBullets, { x: player.x, y: player.y - 26, vx: 0, vy: -450, r: 7,
+          damage: damage * (2 + player.weaponLevel * 0.3), blastRadius: 66 + player.weaponLevel * 6,
+          kind: 'explosive' }, LIMITS.playerBullets);
+      } else if (player.weapon === 'gun') {
+        for (const x of [-7, 7]) boundedPush(this.playerBullets, { x: player.x + x, y: player.y - 25, vx: 0, vy: -650, r: 4, damage, kind: 'gun' }, LIMITS.playerBullets);
+        if (player.weaponLevel >= 2) {
+          for (const side of [-1, 1]) boundedPush(this.playerBullets, { x: player.x + side * 17, y: player.y - 9, vx: side * 96, vy: -625, r: 3.5, damage: damage * 0.75, kind: 'gun' }, LIMITS.playerBullets);
+        }
+        if (player.weaponLevel >= 3) boundedPush(this.playerBullets, { x: player.x, y: player.y - 33, vx: 0, vy: -740, r: 5, damage: damage * 1.3, kind: 'gun' }, LIMITS.playerBullets);
+      } else throw new RangeError('Unknown player weapon: ' + player.weapon);
+      this.emit('shot', { x: player.x, y: player.y, weapon: player.weapon });
+    }
+    steer(bullet, target, turnRate, dt) {
+      const speed = Math.hypot(bullet.vx, bullet.vy);
+      const current = Math.atan2(bullet.vy, bullet.vx);
+      const desired = Math.atan2(target.y - bullet.y, target.x - bullet.x);
+      const difference = Math.atan2(Math.sin(desired - current), Math.cos(desired - current));
+      const angle = current + clamp(difference, -turnRate * dt, turnRate * dt);
+      bullet.vx = Math.cos(angle) * speed;
+      bullet.vy = Math.sin(angle) * speed;
+    }
+    tickProjectiles(dt) {
+      for (const bullet of this.playerBullets) {
+        if (bullet.kind === 'homing') {
+          let target = this.enemies.find(enemy => enemy.id === bullet.targetId && enemy.hp > 0 && !enemy.destroyed && enemy.y < bullet.y + enemy.r);
+          if (!target) {
+            let distance = Infinity;
+            for (const enemy of this.enemies) {
+              if (enemy.hp <= 0 || enemy.destroyed || enemy.y >= bullet.y + enemy.r || enemy.y < -enemy.r) continue;
+              const d = (enemy.x - bullet.x) ** 2 + (enemy.y - bullet.y) ** 2;
+              if (d < distance) { distance = d; target = enemy; }
+            }
+            bullet.targetId = target ? target.id : null;
+          }
+          if (target) this.steer(bullet, target, bullet.turnRate, dt);
+          bullet.life -= dt;
+          if (bullet.life <= 0) bullet.dead = true;
+        }
+        bullet.x += bullet.vx * dt; bullet.y += bullet.vy * dt;
       }
-      if (player.weaponLevel >= 3) this.playerBullets.push({ x: player.x, y: player.y - 33, vx: 0, vy: -740, r: 5, damage: damage * 1.3 });
-      this.emit('shot', { x: player.x, y: player.y });
+      const detonations = [];
+      for (const bullet of this.enemyBullets) {
+        if (bullet.kind === 'homing' && bullet.trackTime > 0) {
+          this.steer(bullet, this.player, bullet.turnRate, Math.min(dt, bullet.trackTime));
+          bullet.trackTime = Math.max(0, bullet.trackTime - dt);
+        }
+        bullet.x += bullet.vx * dt; bullet.y += bullet.vy * dt;
+        if (bullet.kind === 'explosive') {
+          bullet.fuse -= dt;
+          if (bullet.fuse <= 0 && !bullet.dead) { bullet.dead = true; detonations.push(bullet); }
+        }
+      }
+      for (const bullet of detonations) {
+        this.weaponExplosion(bullet.x, bullet.y, 40, '#ff795b');
+        for (let i = 0; i < 7; i++) this.makeBullet(bullet.x, bullet.y, i * Math.PI * 2 / 7, 115, 4, 'orb');
+      }
+    }
+    weaponExplosion(x, y, r, color) {
+      boundedPush(this.weaponEffects, { x, y, r, life: 0.32, maxLife: 0.32, color, kind: 'explosion' }, LIMITS.effects);
+      this.burst(x, y, color, 8, 0.25);
+    }
+    explodePlayerBullet(bullet) {
+      this.weaponExplosion(bullet.x, bullet.y, bullet.blastRadius, '#f9c976');
+      // Resolve regular kills first so a simultaneous boss kill settles once.
+      const targets = this.enemies.filter(enemy => enemy.hp > 0 && !enemy.destroyed
+        && Math.hypot(enemy.x - bullet.x, enemy.y - bullet.y) < bullet.blastRadius + enemy.r)
+        .sort((a, b) => Number(a.type === 'boss') - Number(b.type === 'boss'));
+      for (const enemy of targets) {
+        enemy.hp -= bullet.damage;
+        enemy.hit = 0.07;
+        this.emit('hit', { x: enemy.x, y: enemy.y, weapon: 'explosive' });
+        if (enemy.hp <= 0) this.destroyEnemy(enemy);
+      }
+    }
+    tickBeams(dt) {
+      for (const beam of this.playerBeams) {
+        beam.t += dt;
+        for (const enemy of this.enemies) {
+          if (enemy.hp <= 0 || enemy.destroyed || !rayCollides(beam, enemy)) continue;
+          enemy.hp -= beam.damagePerSecond * dt;
+          enemy.hit = 0.07;
+          if (enemy.hp <= 0) { this.destroyEnemy(enemy); if (this.state !== 'playing') return false; }
+        }
+      }
+      for (const beam of this.enemyBeams) {
+        beam.t += dt;
+        if (beam.t >= beam.warning && beam.t <= beam.warning + beam.duration && rayCollides(beam, this.player)) {
+          this.hurt();
+          if (this.state !== 'playing') return false;
+        }
+      }
+      this.playerBeams = this.playerBeams.filter(beam => beam.t < beam.warning + beam.duration);
+      this.enemyBeams = this.enemyBeams.filter(beam => beam.t < beam.warning + beam.duration);
+      return true;
     }
     spawnWave() {
       const config = this.stageConfig;
@@ -565,6 +707,7 @@
       const special = (wave + config.wavePattern) % 4;
       const count = special >= 2 ? 3 : 5;
       for (let i = 0; i < count; i++) {
+        if (this.enemies.length >= LIMITS.enemies) break;
         const type = special === 2 ? (i === 1 ? 'warship' : 'striker') : special === 3 ? (i === 1 ? 'planet' : 'scout') : ((wave + i + this.stage) % 4 === 3 ? 'striker' : 'scout');
         const x = type === 'planet' ? (wave % 8 === 3 ? 118 : 287) : 49 + i * ((WIDTH - 98) / (count - 1));
         const stagger = config.formation === 1 ? (count - 1 - i) * 28 : config.formation === 2 ? i % 2 * 55 : wave % 2 === 0 ? Math.abs(i - (count - 1) / 2) * 35 : i * 30;
@@ -584,6 +727,7 @@
           t: 0, hit: 0, phase: i * 0.7, sway: type === 'warship' ? 16 : type === 'planet' ? 0 : config.formation === 2 ? 34 : 26,
           swayRate: config.formation === 1 ? 0.95 : 1.3,
           holdTime: 0, charge: 0, aimAngle: Math.PI / 2, aimLocked: false,
+          volley: 0, weaponIndex: this.stage < 3 ? 0 : (this.stage + wave + i) % WEAPONS.length,
           fireTimer: type === 'planet' ? 2.1 : 1.7 + this.random() * 1.4
         });
       }
@@ -596,12 +740,14 @@
         ? { sheet: 'enemyVariants', index: config.bossSkin, rotation: Math.PI }
         : { sheet: 'fleet', index: config.bossSkin, rotation: Math.PI / 2 });
       const boss = { id: ++this.id, type: 'boss', form: config.bossForm, appearance, pattern: config.bossPattern,
-        x: WIDTH / 2, y: -70, r: 56, hp, maxHp: hp, t: 0, hit: 0, fireTimer: 2.8, volley: 0 };
+        x: WIDTH / 2, y: -70, r: 56, hp, maxHp: hp, t: 0, hit: 0, fireTimer: 2.8, volley: 0,
+        weaponIndex: this.stage < 3 ? 0 : this.stage % WEAPONS.length };
       this.enemies.push(boss);
       this.banner = '';
       this.bannerTime = 0;
       this.bossWarningTime = this.bossWarningDuration;
       this.enemyBullets = [];
+      this.enemyBeams = [];
       this.emit('boss', { phase: 'appeared', stage: this.stage, enemyId: boss.id });
       this.emit('stage', { stage: this.stage, boss: true });
     }
@@ -609,7 +755,26 @@
       const config = this.stageConfig;
       const angle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
       const speed = enemy.type === 'boss' ? 170 + config.bulletSpeedBoost * 14 / 15 : 143 + config.bulletSpeedBoost;
-      if (enemy.type === 'scout') {
+      const weapon = WEAPONS[(enemy.weaponIndex + Math.floor(enemy.volley / 2)) % WEAPONS.length];
+      if (!weapon) throw new RangeError('Invalid enemy weapon rotation');
+      enemy.volley++;
+      enemy.lastWeapon = weapon;
+      if (weapon === 'laser') {
+        const origins = enemy.type === 'boss' || enemy.type === 'warship' ? [-23, 23] : [0];
+        for (const offset of origins) {
+          const x = enemy.x + offset, y = enemy.y + enemy.r * 0.65;
+          boundedPush(this.enemyBeams, { x, y, angle: Math.atan2(this.player.y - y, this.player.x - x),
+            length: HEIGHT + 100, width: enemy.type === 'boss' ? 13 : 10, t: 0, warning: 0.9, duration: 0.26 }, LIMITS.beams);
+        }
+      } else if (weapon === 'homing') {
+        const origins = enemy.type === 'boss' || enemy.type === 'warship' ? [-25, 25] : [0];
+        for (const offset of origins) this.makeBullet(enemy.x + offset, enemy.y + enemy.r, angle,
+          Math.min(210, speed * 0.85), 6, 'homing', { trackTime: 0.7, turnRate: 0.75 });
+      } else if (weapon === 'explosive') {
+        const offsets = enemy.type === 'boss' ? [-0.18, 0.18] : [0];
+        for (const offset of offsets) this.makeBullet(enemy.x, enemy.y + enemy.r, angle + offset,
+          Math.min(175, speed * 0.75), 8, 'explosive', { fuse: 1.6 });
+      } else if (enemy.type === 'scout') {
         this.makeBullet(enemy.x, enemy.y + enemy.r, angle, speed, 5);
       } else if (enemy.type === 'planet') {
         const aim = enemy.aimAngle;
@@ -622,7 +787,6 @@
       } else if (enemy.type !== 'boss') {
         for (const offset of [-0.1, 0.1]) this.makeBullet(enemy.x, enemy.y + enemy.r, angle + offset, speed, 5.5);
       } else {
-        enemy.volley++;
         const rage = enemy.hp < enemy.maxHp * 0.5;
         if (enemy.pattern === 0) {
           const count = rage ? 9 : 7;
@@ -640,7 +804,9 @@
         } else throw new RangeError('Unknown boss attack pattern: ' + enemy.pattern);
       }
     }
-    makeBullet(x, y, angle, speed, r, kind = 'orb') { this.enemyBullets.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, r, kind }); }
+    makeBullet(x, y, angle, speed, r, kind = 'orb', extra = {}) {
+      boundedPush(this.enemyBullets, { x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, r, kind, ...extra }, LIMITS.enemyBullets);
+    }
     burst(x, y, color, count, lifetime = 0.65) {
       const particleCount = Math.min(count, MAX_PARTICLES);
       const overflow = this.particles.length + particleCount - MAX_PARTICLES;
@@ -667,12 +833,16 @@
         this.enemies = this.enemies.filter(item => item !== enemy && item.hp > 0 && !item.destroyed);
         this.enemyBullets = [];
         this.playerBullets = [];
+        this.enemyBeams = [];
+        this.playerBeams = [];
         this.player.hp = Math.min(this.player.maxHp, this.player.hp + 1);
         this.emit('boss', { phase: 'defeated', stage: this.stage, enemyId: enemy.id });
         if (this.stage === STAGES.length - 1) this.finish('victory');
         else { this.captureCheckpoint('upgrade'); this.setState('upgrade'); }
       } else if (this.kills % 5 === 0) {
-        this.pickups.push({ x: enemy.x, y: enemy.y, r: 12, type: this.kills % 10 === 0 ? 'repair' : 'power', t: 0 });
+        const drop = (Math.floor(this.kills / 5) - 1) % 5;
+        boundedPush(this.pickups, { x: enemy.x, y: enemy.y, r: 12, t: 0,
+          ...(drop === 4 ? { type: 'repair' } : { type: 'weapon', weapon: ['laser', 'homing', 'explosive', 'gun'][drop] }) }, LIMITS.pickups);
       }
     }
     hurt() {
@@ -688,6 +858,14 @@
         this.resultProgression = Object.freeze({ ...this.progression });
         this.storeCheckpoint(null, false);
         this.clearRunGrowth();
+        this.playerBullets = [];
+        this.enemyBullets = [];
+        this.playerBeams = [];
+        this.enemyBeams = [];
+        this.weaponEffects = [];
+        this.pickups = [];
+        this.bombCharges = 0;
+        this.supportCharges = 0;
         this.bestScore = Math.max(this.bestScore, this.score);
         this.cinematicTime = 0;
         this.bossWarningTime = 0;
@@ -713,5 +891,5 @@
       this.emit(state, { score: this.score, stage: this.stage, kills: this.kills });
     }
   }
-  return { Game, WIDTH, HEIGHT, STAGES, validateCheckpoint };
+  return { Game, WIDTH, HEIGHT, STAGES, WEAPONS, LIMITS, validateCheckpoint };
 });

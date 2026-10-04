@@ -216,6 +216,94 @@ test('legacy import and XP without a living checkpoint are rejected', { skip }, 
   assert.equal(response.statusCode, 400);
 });
 
+test('weapon checkpoints use the engine contract and normalize exact legacy v2 saves', { skip }, async () => {
+  for (const weapon of ['gun', 'laser', 'homing', 'explosive']) {
+    const { account: user } = await account();
+    const checkpoint = seedCheckpoint(); checkpoint.player.weapon = weapon;
+    const body = saveBody(0, { checkpoint });
+    const result = await store.save(user.user.id, body);
+    assert.equal(result.account.checkpoint.player.weapon, weapon);
+    assert.equal((await pool.query('SELECT checkpoint FROM player_saves WHERE user_id=$1', [user.user.id])).rows[0].checkpoint.player.weapon, weapon);
+  }
+  const { account: user } = await account();
+  const legacy = { mutationId: randomUUID(), profile: { version: 2, totalXp: 10 }, bestScore: 100, checkpoint: seedCheckpoint() };
+  const imported = await store.importSave(user.user.id, legacy);
+  assert.equal(imported.account.checkpoint.player.weapon, 'gun');
+  assert.equal(Object.hasOwn(legacy.checkpoint.player, 'weapon'), false, 'normalizing must not change the request used for idempotency');
+  assert.deepEqual(await store.importSave(user.user.id, legacy), imported);
+  await assert.rejects(store.importSave(user.user.id, { ...legacy, checkpoint: imported.account.checkpoint }), error => error.code === 'MUTATION_REUSED');
+  // Direct old v2 database records are normalized on read as well, not just at HTTP input.
+  await pool.query('UPDATE player_saves SET checkpoint=$2 WHERE user_id=$1', [user.user.id, seedCheckpoint()]);
+  assert.equal((await store.getAccount(user.user.id)).checkpoint.player.weapon, 'gun');
+  for (const player of [{ ...seedCheckpoint().player, weapon: 'unknown' }, { ...seedCheckpoint().player, weapon: 'gun', ammo: 5 }]) {
+    await assert.rejects(store.save(user.user.id, saveBody(1, { checkpoint: { ...seedCheckpoint(), player } })), error => error.code === 'INVALID_CHECKPOINT');
+  }
+  assert.equal((await store.getAccount(user.user.id)).revision, 1);
+});
+
+test('free charges persist across stages and cannot refill by switching back to an old run ID', { skip }, async () => {
+  const { account: user } = await account();
+  const active = saveBody(0, { checkpoint: { ...seedCheckpoint(), freeCharges: { bomb: 0, support: 1 } } });
+  await store.save(user.user.id, active);
+  const nextStage = { ...active, mutationId: randomUUID(), expectedRevision: 1, highestClearedStage: 1, checkpoint: { ...active.checkpoint, stage: 1, freeCharges: { bomb: 1, support: 1 } }, run: { ...active.run, stage: 1 }, stageResults: [{ stage: 1, score: 100, kills: 1 }] };
+  await assert.rejects(store.save(user.user.id, nextStage), error => error.code === 'FREE_CHARGES_RESTORED');
+  assert.equal((await store.getAccount(user.user.id)).revision, 1);
+  assert.equal((await pool.query('SELECT count(*)::int AS count FROM run_stage_clears WHERE user_id=$1', [user.user.id])).rows[0].count, 0);
+  const consumed = { ...nextStage, mutationId: randomUUID(), checkpoint: { ...nextStage.checkpoint, freeCharges: { bomb: 0, support: 0 } } };
+  await store.save(user.user.id, consumed);
+  assert.deepEqual((await pool.query('SELECT free_bomb_charges,free_support_charges FROM game_runs WHERE user_id=$1 AND id=$2', [user.user.id, active.run.id])).rows[0], { free_bomb_charges: 0, free_support_charges: 0 });
+  const fresh = saveBody(2, { profile: { version: 2, totalXp: 0 }, run: { id: randomUUID(), stage: 0, score: 0, kills: 0, status: 'active' } });
+  assert.deepEqual((await store.save(user.user.id, fresh)).account.checkpoint.freeCharges, { bomb: 1, support: 1 });
+  const switchBack = { ...consumed, mutationId: randomUUID(), expectedRevision: 3, stageResults: [], checkpoint: { ...consumed.checkpoint, freeCharges: { bomb: 1, support: 0 } } };
+  await assert.rejects(store.save(user.user.id, switchBack), error => error.code === 'FREE_CHARGES_RESTORED');
+  assert.equal((await store.getAccount(user.user.id)).revision, 3);
+  assert.deepEqual((await store.save(user.user.id, { ...switchBack, mutationId: randomUUID(), checkpoint: consumed.checkpoint })).account.checkpoint.freeCharges, { bomb: 0, support: 0 });
+  assert.deepEqual((await store.getAccount(user.user.id)).inventory, { bomb: 0, support: 0 });
+});
+
+test('a later-stage continuation keeps spent charges but a fresh first-stage run gets its own charges', { skip }, async () => {
+  const { account: user } = await account();
+  const checkpoint = { ...seedCheckpoint(), stage: 4, freeCharges: { bomb: 0, support: 0 }, player: { ...seedCheckpoint().player, weapon: 'laser' } };
+  await store.importSave(user.user.id, { mutationId: randomUUID(), profile: { version: 2, totalXp: 40 }, bestScore: 100, checkpoint });
+  const resumed = saveBody(1, { profile: { version: 2, totalXp: 0 }, highestClearedStage: 4, checkpoint: { ...checkpoint, freeCharges: { bomb: 1, support: 0 } }, run: { id: randomUUID(), stage: 4, score: 100, kills: 1, status: 'active' } });
+  await assert.rejects(store.save(user.user.id, resumed), error => error.code === 'FREE_CHARGES_RESTORED');
+  assert.equal((await store.getAccount(user.user.id)).revision, 1);
+  const result = await store.save(user.user.id, { ...resumed, mutationId: randomUUID(), checkpoint });
+  assert.deepEqual(result.account.checkpoint.freeCharges, { bomb: 0, support: 0 });
+  assert.equal(result.account.checkpoint.player.weapon, 'laser');
+  const fresh = saveBody(2, { profile: { version: 2, totalXp: 0 }, run: { id: randomUUID(), stage: 0, score: 0, kills: 0, status: 'active' } });
+  assert.deepEqual((await store.save(user.user.id, fresh)).account.checkpoint.freeCharges, { bomb: 1, support: 1 });
+});
+
+test('migration defaults are a historical starting point and first legal save binds the remaining charges', { skip }, async () => {
+  const { account: user } = await account();
+  const runId = randomUUID();
+  // This is how a pre-003 run looks after the forward migration adds its default columns.
+  await pool.query('INSERT INTO game_runs(user_id,id,stage,score,kills,status) VALUES($1,$2,0,0,0,\'active\')', [user.user.id, runId]);
+  assert.deepEqual((await pool.query('SELECT free_bomb_charges,free_support_charges FROM game_runs WHERE user_id=$1 AND id=$2', [user.user.id, runId])).rows[0], { free_bomb_charges: 1, free_support_charges: 1 });
+  const body = saveBody(0, { checkpoint: { ...seedCheckpoint(), freeCharges: { bomb: 0, support: 0 } }, run: { id: runId, stage: 0, score: 100, kills: 1, status: 'active' } });
+  await store.save(user.user.id, body);
+  assert.deepEqual((await pool.query('SELECT free_bomb_charges,free_support_charges FROM game_runs WHERE user_id=$1 AND id=$2', [user.user.id, runId])).rows[0], { free_bomb_charges: 0, free_support_charges: 0 });
+  await assert.rejects(store.save(user.user.id, { ...body, mutationId: randomUUID(), expectedRevision: 1, checkpoint: seedCheckpoint() }), error => error.code === 'FREE_CHARGES_RESTORED');
+});
+
+test('death cannot preserve a checkpoint, reopen its ID or install an unproven upgrade under a new ID', { skip }, async () => {
+  const { account: user } = await account();
+  const active = saveBody(0, { checkpoint: { ...seedCheckpoint(), freeCharges: { bomb: 0, support: 0 } } });
+  await store.save(user.user.id, active);
+  await assert.rejects(store.save(user.user.id, { ...active, mutationId: randomUUID(), expectedRevision: 1, run: { ...active.run, status: 'defeated' } }), error => error.code === 'TERMINAL_SAVE_NOT_RESET');
+  const ended = { ...active, mutationId: randomUUID(), expectedRevision: 1, profile: { version: 2, totalXp: 0 }, checkpoint: null, run: { ...active.run, status: 'defeated' } };
+  const result = await store.save(user.user.id, ended);
+  assert.equal(result.account.checkpoint, null); assert.equal(result.account.profile.totalXp, 0);
+  assert.deepEqual((await pool.query('SELECT free_bomb_charges,free_support_charges FROM game_runs WHERE user_id=$1 AND id=$2', [user.user.id, active.run.id])).rows[0], { free_bomb_charges: 0, free_support_charges: 0 });
+  await assert.rejects(store.save(user.user.id, { ...active, mutationId: randomUUID(), expectedRevision: 2 }), error => error.code === 'INVALID_RUN_TRANSITION');
+  const forgedUpgrade = saveBody(2, { profile: { version: 2, totalXp: 0 }, checkpoint: { ...active.checkpoint, phase: 'upgrade' } });
+  await assert.rejects(store.save(user.user.id, forgedUpgrade), error => error.code === 'INVALID_STAGE_PROGRESS');
+  const forgedLaterStage = { ...forgedUpgrade, mutationId: randomUUID(), checkpoint: { ...active.checkpoint, stage: 1 }, run: { ...forgedUpgrade.run, stage: 1 } };
+  await assert.rejects(store.save(user.user.id, forgedLaterStage), error => error.code === 'INVALID_RUN_START');
+  assert.equal((await store.getAccount(user.user.id)).revision, 2);
+});
+
 
 test('forward roguelike migration resets legacy growth but retains identity, inventory and records', { skip }, async () => {
   const { account: user } = await account();

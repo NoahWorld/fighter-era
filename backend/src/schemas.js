@@ -17,7 +17,10 @@ export const checkpoint = {
       kills: int(1000000),
       runStartXp: { const: 0 },
       totalXp: int(100000000),
-      player: object({ hp: int(10000, 1), maxHp: int(10000, 1), weaponLevel: int(3, 1) }),
+      // Version 2 predates selectable weapons. Only the exact legacy player
+      // shape may omit weapon; the shared engine validator explicitly maps it
+      // to gun rather than accepting malformed or unknown weapon values.
+      player: object({ hp: int(10000, 1), maxHp: int(10000, 1), weaponLevel: int(3, 1), weapon: { enum: ['gun', 'laser', 'homing', 'explosive'] } }, ['hp', 'maxHp', 'weaponLevel']),
       fireInterval: { type: 'number', minimum: 0.07, maximum: 0.16 },
       damageBonus: { type: 'number', minimum: 0, maximum: 40 },
       freeCharges: object({ bomb: int(1), support: int(1) })

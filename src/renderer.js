@@ -20,6 +20,14 @@
     { level: 6, title: '雷霆', code: 'THUNDER', edge: '#8abaff' },
     { level: 10, title: '星曜', code: 'NOVA', edge: '#f9dc99' },
   ];
+  const WEAPONS = Object.freeze({
+    gun: { label: '机炮', color: '#e8c182', sprite: 'round' },
+    laser: { label: '光柱', color: '#8be8ff', sprite: 'beam' },
+    homing: { label: '追踪弹', color: '#d5afff', sprite: 'missile' },
+    explosive: { label: '爆炸弹', color: '#ffbf81', sprite: 'rocket' },
+  });
+  const LANDSCAPES = Object.freeze(['航道光带', '星环边界', '陨石长河', '轨道遗迹', '星港网格',
+    '双星回廊', '星云裂隙', '螺旋星系', '冰晶星海', '恒星风暴']);
   const SECTORS = [
     {
       sky: '#060d1d', mist: '#466ea7', star: '#a9d6f4', accent: '#dbcaab',
@@ -147,6 +155,34 @@
         y: Math.sin(i * 2.4) * (0.2 + (i % 3) * 0.16), r: 0.04 + (i % 3) * 0.027,
       }));
       this.backgroundClock = { source: null, previous: 0, elapsed: 0 };
+      this.backgroundShapes = Object.freeze(Array.from({ length: 18 }, (_, i) => {
+        const radius = 6 + (i * 7) % 16;
+        return Object.freeze({ x: (i * 127 + 17) % W, y: (i * 163 + 41) % H, radius,
+          angle: (i * 2.399) % (Math.PI * 2),
+          points: Object.freeze(Array.from({ length: 6 }, (_, point) => {
+            const a = point * Math.PI / 3;
+            const extent = radius * (0.72 + ((point + i) % 3) * 0.13);
+            return Object.freeze([Math.cos(a) * extent, Math.sin(a) * extent]);
+          })) });
+      }));
+      this.spiralArms = Object.freeze(Array.from({ length: 4 }, (_, arm) => Object.freeze(
+        Array.from({ length: 25 }, (_, i) => {
+          const angle = arm * Math.PI / 2 + i * 0.14; const radius = 12 + i * 7.5;
+          return Object.freeze([Math.cos(angle) * radius, Math.sin(angle) * radius * 0.68]);
+        }))));
+      // All 100 layouts are made once. Changing a level selects fixed geometry;
+      // scrolling changes coordinates only, without textures, gradients or blur.
+      this.backgrounds = Array.from({ length: 100 }, (_, stage) => {
+        const chapter = Math.floor(stage / 10); const variant = stage % 10;
+        return Object.freeze({
+          chapter, variant, name: LANDSCAPES[chapter], angle: (variant - 4.5) * 0.09,
+          center: 85 + ((variant * 73 + chapter * 41) % 235),
+          planetX: variant % 2 ? 375 - variant * 5 : 25 + variant * 5,
+          planetY: 95 + (variant * 61) % 250, radiusScale: 0.66 + variant * 0.039,
+          offsetX: variant * 47 + chapter * 29, offsetY: variant * 53,
+        });
+      });
+      this.rewardOffer = null;
     }
 
     text(value, x, y, size, color, weight, align) {
@@ -190,16 +226,36 @@
       const supportBalance = game.supportCharges + game.inventory.support;
       const bombBalance = game.bombCharges + game.inventory.bomb;
       return [
-        { id: 'support', label: '救援', x: 347, y: 480, w: 50, h: 56,
-          disabled: supportBalance === 0 || game.supportTime > 0,
-          active: game.supportTime > 0, status: game.supportTime > 0 ? '作战 ' + Math.ceil(game.supportTime) + 's' : '余量 ' + supportBalance },
-        { id: 'bomb', label: '轰炸弹', x: 347, y: 548, w: 50, h: 56,
-          disabled: bombBalance === 0 || game.bombTime > 0,
-          active: game.bombTime > 0, status: game.bombTime > 0 ? '清空空域' : '余量 ' + bombBalance },
+        { id: 'support', label: supportBalance === 0 ? '获取救援' : '救援', x: 347, y: 480, w: 50, h: 56,
+          disabled: game.supportTime > 0,
+          active: game.supportTime > 0, status: game.supportTime > 0 ? '作战 ' + Math.ceil(game.supportTime) + 's' : supportBalance === 0 ? '广告 / 充值' : '余量 ' + supportBalance },
+        { id: 'bomb', label: bombBalance === 0 ? '获取炸弹' : '轰炸弹', x: 347, y: 548, w: 50, h: 56,
+          disabled: game.bombTime > 0,
+          active: game.bombTime > 0, status: game.bombTime > 0 ? '清空空域' : bombBalance === 0 ? '广告 / 充值' : '余量 ' + bombBalance },
       ];
     }
 
     getButtons(game) {
+      if (this.rewardOffer) return this.rewardButtons();
+      return this.getSceneButtons(game);
+    }
+
+    showRewardOffer(item) {
+      if (!['bomb', 'support', 'revive'].includes(item)) throw new RangeError('Unknown reward offer: ' + item);
+      this.rewardOffer = item;
+    }
+
+    hideRewardOffer() { this.rewardOffer = null; }
+
+    rewardButtons() {
+      return [
+        { id: 'reward:ad', label: '观看广告 · 待开通', x: 51, y: 385, w: 303, h: 49, disabled: true },
+        { id: 'reward:purchase', label: '充值获取 · 待开通', x: 51, y: 448, w: 303, h: 49, disabled: true },
+        { id: 'reward:close', label: '返回', x: 51, y: 516, w: 303, h: 43, disabled: false },
+      ];
+    }
+
+    getSceneButtons(game) {
       switch (game.state) {
         case 'menu': return game.savedCheckpoint ? [
           { id: 'continue', label: game.savedCheckpoint.phase === 'upgrade' ? '继续选择过关补给' : '继续第 ' + (game.savedCheckpoint.stage + 1) + ' 关', x: 34, y: 558, w: 337, h: 45, disabled: false },
@@ -215,7 +271,11 @@
         case 'upgrade': return game.upgradeOptions.map((option, i) => ({
           id: 'upgrade:' + option.id, label: option.title, x: 29, y: 283 + i * 86, w: 347, h: 74, disabled: false,
         }));
-        case 'gameover':
+        case 'gameover': return [
+          { id: 'revive', label: '原地复活 · 广告 / 充值', x: 53, y: 454, w: 299, h: 41, disabled: false },
+          { id: 'restart', label: '重新出击', x: 53, y: 508, w: 299, h: 48, disabled: false },
+          { id: 'home', label: '返回机库', x: 53, y: 569, w: 299, h: 43, disabled: false },
+        ];
         case 'victory': return [
           { id: 'restart', label: game.state === 'victory' ? '再次出击' : '重新出击', x: 53, y: 458, w: 299, h: 54, disabled: false },
           { id: 'home', label: '返回机库', x: 53, y: 525, w: 299, h: 47, disabled: false },
@@ -250,7 +310,22 @@
           ctx.fillRect(0, 0, W, H);
         }
       }
+      if (this.rewardOffer) this.rewardPanel();
       ctx.restore();
+    }
+
+    rewardPanel() {
+      const item = this.rewardOffer;
+      const title = item === 'revive' ? '原地复活' : item === 'support' ? '获取救援' : '获取轰炸弹';
+      const ctx = this.ctx;
+      ctx.fillStyle = 'rgba(2,7,17,0.9)'; ctx.fillRect(0, 0, W, H);
+      this.box(29, 177, 347, 410, '#101d30', '#526178', 18);
+      this.text('补 给 通 道', W / 2, 218, 9, C.gold, '500', 'center');
+      this.text(title, W / 2, 253, 26, C.text, '600', 'center');
+      this.text(item === 'revive' ? '死亡后本局成长已清空' : '本局免费次数已用尽', W / 2, 294, 12, '#a6b8cf', '500', 'center');
+      this.text(item === 'revive' ? '原地续战需广告奖励或充值资格' : '救援和轰炸弹每局各免费一次', W / 2, 320, 11, '#c9b590', '400', 'center');
+      this.text(item === 'revive' ? '广告与充值尚未接入，暂不能复活' : '追加道具需广告或充值，通道待开通', W / 2, 345, 10, '#8d9fb9', '400', 'center');
+      for (const button of this.rewardButtons()) this.button(button, true);
     }
 
     pilot(x, y, scale, time, pose, alpha) {
@@ -454,26 +529,29 @@
       const chapter = game.stageConfig && game.stageConfig.chapter;
       if (!Number.isInteger(chapter) || chapter < 0 || chapter >= SECTORS.length) throw new RangeError('Unknown background chapter: ' + chapter + '; stage=' + game.stage);
       const ctx = this.ctx;
+      const layout = this.backgrounds[game.state === 'menu' ? 0 : game.stage];
+      if (!layout) throw new RangeError('Missing background layout for stage: ' + game.stage);
       const sector = SECTORS[game.state === 'menu' ? 0 : chapter];
       ctx.fillStyle = sector.sky; ctx.fillRect(0, 0, W, H);
       // Each finite layer wraps only after its entire extent has left the screen.
       // All coordinates and paint colors are reused: no textures, blur filters or per-frame gradients.
       for (const nebula of this.nebulae) {
         const margin = nebula.radius;
-        const y = (nebula.y + time * 4 + margin) % (H + margin * 2) - margin;
-        ctx.save(); ctx.translate(nebula.x, y); ctx.rotate(nebula.angle); ctx.scale(1, nebula.flatten);
-        ctx.globalAlpha = 0.025;
+        const y = (nebula.y + layout.offsetY + time * 4 + margin) % (H + margin * 2) - margin;
+        ctx.save(); ctx.translate(nebula.x, y); ctx.rotate(nebula.angle + layout.angle); ctx.scale(1, nebula.flatten);
+        ctx.globalAlpha = 0.023;
         for (let i = 0; i < 6; i += 1) this.circle(-i * 7, i * 3, nebula.radius * (1 - i * 0.095), sector.mist);
         ctx.restore();
       }
-      const radius = sector.radius;
+      this.landscape(layout, sector, time);
+      const radius = sector.radius * layout.radiusScale;
       const margin = radius * (sector.ring ? 1.75 : 1.08);
-      const y = (sector.y + time * 7 + margin) % (H + margin * 2) - margin;
+      const y = (layout.planetY + time * 7 + margin) % (H + margin * 2) - margin;
       ctx.save(); ctx.globalAlpha = game.state === 'menu' ? 0.64 : 0.47;
-      this.distantPlanet(sector.x, y, radius, sector);
+      this.distantPlanet(layout.planetX, y, radius, sector);
       ctx.restore();
-      const moonY = (586 + time * 5.5 + 48) % (H + 96) - 48;
-      const moonX = sector.ring ? 363 : 16;
+      const moonY = (586 + layout.offsetY + time * 5.5 + 48) % (H + 96) - 48;
+      const moonX = layout.planetX < W / 2 ? 363 : 16;
       ctx.save(); ctx.globalAlpha = 0.34;
       this.circle(moonX, moonY, 43, sector.moon);
       ctx.beginPath(); ctx.arc(moonX, moonY, 43, 0, Math.PI * 2); ctx.clip();
@@ -482,17 +560,138 @@
       this.circle(moonX - 18, moonY + 9, 3, sector.sky);
       ctx.restore();
       for (const star of this.stars) {
-        const starY = (star.y + time * star.speed + 4) % (H + 8) - 4;
+        const starY = (star.y + layout.offsetY + time * star.speed + 4) % (H + 8) - 4;
+        const starX = (star.x + layout.offsetX) % W;
         ctx.globalAlpha = star.alpha;
         ctx.fillStyle = star.accent ? sector.accent : sector.star;
-        ctx.fillRect(star.x, starY, star.size, star.size);
+        ctx.fillRect(starX, starY, star.size, star.size);
         if (star.cross) {
           ctx.globalAlpha = star.alpha * 0.42;
-          this.line(star.x - 3, starY, star.x + 3.5, starY, sector.star, 0.6);
-          this.line(star.x, starY - 3, star.x, starY + 3.5, sector.star, 0.6);
+          this.line(starX - 3, starY, starX + 3.5, starY, sector.star, 0.6);
+          this.line(starX, starY - 3, starX, starY + 3.5, sector.star, 0.6);
         }
       }
       ctx.globalAlpha = 1;
+    }
+
+    landscape(layout, sector, time) {
+      const ctx = this.ctx; const v = layout.variant;
+      ctx.save();
+      if (layout.chapter === 0) {
+        // Navigation trails remain recognizable even in the first ten levels.
+        ctx.globalAlpha = 0.14;
+        for (let i = 0; i < 4; i += 1) {
+          const x = 42 + i * 103 + layout.angle * 95;
+          this.line(x - 85, -30, x + 95, H + 30, sector.mist, 15 + (v % 3) * 4);
+          this.line(x - 76, -30, x + 104, H + 30, sector.star, 0.75);
+          const y = (i * 189 + layout.offsetY + time * 18) % (H + 44) - 22;
+          this.line(x - 9 + y * 0.24, y, x + 9 + y * 0.24, y, sector.star, 1.6);
+        }
+      } else if (layout.chapter === 1) {
+        ctx.globalAlpha = 0.16;
+        for (let i = 0; i < 3; i += 1) {
+          const y = (i * 300 + layout.offsetY + time * 10 + 300) % (H + 600) - 300;
+          ctx.save(); ctx.translate(layout.center, y); ctx.rotate(-0.6 + layout.angle); ctx.scale(1, 0.4);
+          this.circle(0, 0, 190 + i * 18 + v * 4, null, sector.mist, 16);
+          this.circle(0, 0, 183 + i * 18 + v * 4, null, sector.star, 1);
+          ctx.restore();
+        }
+      } else if (layout.chapter === 2 || layout.chapter === 8) {
+        const ice = layout.chapter === 8;
+        const count = 12 + v % 7;
+        for (let i = 0; i < count; i += 1) {
+          const object = this.backgroundShapes[i];
+          const x = (object.x + layout.offsetX) % W;
+          const y = (object.y + layout.offsetY + time * (8 + i % 3 * 3) + 45) % (H + 90) - 45;
+          ctx.save(); ctx.translate(x, y); ctx.rotate(object.angle + layout.angle);
+          ctx.globalAlpha = ice ? 0.25 : 0.35;
+          if (ice) {
+            ctx.scale(0.76 + v * 0.025, 1.7);
+            ctx.beginPath(); ctx.moveTo(0, -object.radius); ctx.lineTo(object.radius * 0.5, 0);
+            ctx.lineTo(0, object.radius); ctx.lineTo(-object.radius * 0.5, 0); ctx.closePath();
+            ctx.fillStyle = sector.mist; ctx.fill(); ctx.strokeStyle = sector.star; ctx.lineWidth = 0.8; ctx.stroke();
+            this.line(0, -object.radius, 0, object.radius, sector.star, 0.7);
+          } else {
+            polygon(ctx, object.points, sector.moon, sector.rim);
+            this.circle(-object.radius * 0.25, -object.radius * 0.15, object.radius * 0.27, sector.sky);
+          }
+          ctx.restore();
+        }
+      } else if (layout.chapter === 3) {
+        ctx.globalAlpha = 0.19;
+        for (let i = 0; i < 4; i += 1) {
+          const radius = 65 + i * 24 + v * 2;
+          const y = (i * 226 + layout.offsetY + time * 9 + radius) % (H + radius * 2) - radius;
+          const x = i % 2 ? W - layout.center : layout.center;
+          ctx.beginPath(); ctx.arc(x, y, radius, layout.angle, Math.PI * 1.68 + layout.angle);
+          ctx.strokeStyle = sector.star; ctx.lineWidth = 1.3; ctx.stroke();
+          ctx.beginPath(); ctx.arc(x, y, radius - 11, Math.PI * 0.8, Math.PI * 1.6);
+          ctx.strokeStyle = sector.mist; ctx.lineWidth = 5; ctx.stroke();
+          this.box(x + radius - 7, y - 8, 14, 16, sector.moon, sector.star, 1);
+          this.line(x + radius - 15, y, x + radius + 15, y, sector.star, 1);
+        }
+      } else if (layout.chapter === 4) {
+        ctx.globalAlpha = 0.15;
+        const gap = 65 + (v % 4) * 9; const offset = (time * 12 + layout.offsetY) % gap;
+        for (let y = offset - gap; y <= H + gap; y += gap) this.line(0, y, W, y + 18 + v * 2, sector.star, 0.75);
+        for (let x = -H; x < W; x += gap) this.line(x + offset * 0.4, 0, x + H * 0.43 + offset * 0.4, H, sector.mist, 1.2);
+        for (let i = 0; i < 4; i += 1) {
+          const y = (i * 230 + time * 12 + layout.offsetY + 28) % (H + 56) - 28;
+          this.box((i * 137 + layout.offsetX) % W - 20, y, 41, 19, sector.moon, sector.star, 1);
+        }
+      } else if (layout.chapter === 5) {
+        const y = (178 + layout.offsetY + time * 7 + 175) % (H + 350) - 175;
+        ctx.save(); ctx.translate(layout.center, y); ctx.rotate(layout.angle);
+        ctx.globalAlpha = 0.13;
+        for (let i = 0; i < 4; i += 1) {
+          this.circle(-75, -45, 98 - i * 17, sector.mist);
+          this.circle(88, 52, 68 - i * 10, sector.accent);
+        }
+        ctx.globalAlpha = 0.23;
+        this.circle(-75, -45, 21, sector.star); this.circle(88, 52, 15, sector.accent);
+        ctx.save(); ctx.scale(1, 0.47); this.circle(0, 0, 183 + v * 3, null, sector.rim, 1); ctx.restore();
+        ctx.restore();
+      } else if (layout.chapter === 6) {
+        ctx.globalAlpha = 0.11;
+        const offset = (layout.offsetY + time * 9) % H;
+        for (let i = 0; i < 5; i += 1) {
+          const x = 32 + i * 89 + layout.angle * 55;
+          for (let tile = -1; tile <= 0; tile += 1) {
+            const y = offset + tile * H;
+            ctx.beginPath(); ctx.moveTo(x - 50, y);
+            ctx.bezierCurveTo(x + 90, y + H / 3, x - 190, y + H * 2 / 3, x - 50, y + H);
+            ctx.strokeStyle = sector.mist; ctx.lineWidth = 26 + v % 3 * 4; ctx.stroke();
+            ctx.strokeStyle = sector.star; ctx.lineWidth = 1; ctx.stroke();
+          }
+        }
+      } else if (layout.chapter === 7) {
+        const y = (282 + layout.offsetY + time * 8 + 270) % (H + 540) - 270;
+        ctx.save(); ctx.translate(layout.center, y); ctx.rotate(layout.angle + v * 0.15);
+        ctx.scale(1 + v * 0.025, 1 + v * 0.025); ctx.globalAlpha = 0.19;
+        for (const arm of this.spiralArms) {
+          ctx.beginPath(); ctx.moveTo(arm[0][0], arm[0][1]);
+          for (let i = 1; i < arm.length; i += 1) ctx.lineTo(arm[i][0], arm[i][1]);
+          ctx.strokeStyle = sector.mist; ctx.lineWidth = 13; ctx.stroke();
+          ctx.strokeStyle = sector.star; ctx.lineWidth = 1; ctx.stroke();
+          for (let i = 4; i < arm.length; i += 5) this.circle(arm[i][0], arm[i][1], 1.7, sector.accent);
+        }
+        this.circle(0, 0, 25, sector.mist); this.circle(0, 0, 7, sector.star);
+        ctx.restore();
+      } else if (layout.chapter === 9) {
+        ctx.globalAlpha = 0.16;
+        const offset = (time * 17 + layout.offsetY) % 210;
+        for (let i = 0; i < 7; i += 1) {
+          const y = -240 + i * 210 + offset;
+          ctx.beginPath(); ctx.moveTo(-25, y + 20); ctx.bezierCurveTo(155, y - 63 - v * 3, 244, y + 73, W + 30, y - 41);
+          ctx.strokeStyle = sector.mist; ctx.lineWidth = 23; ctx.stroke();
+          ctx.strokeStyle = sector.accent; ctx.lineWidth = 1.1; ctx.stroke();
+        }
+        ctx.globalAlpha = 0.23;
+        const sunY = (135 + layout.offsetY + time * 7 + 32) % (H + 64) - 32;
+        this.circle(layout.center, sunY, 20 + v, sector.mist);
+        this.circle(layout.center, sunY, 10 + v * 0.3, sector.accent);
+      } else throw new RangeError('Unknown landscape chapter: ' + layout.chapter);
+      ctx.restore();
     }
 
     distantPlanet(x, y, radius, sector) {
@@ -677,23 +876,20 @@
 
     world(game, time, showPlayer = true) {
       const ctx = this.ctx;
-      game.pickups.forEach(p => {
-        const color = p.type === 'repair' ? '#90e3d1' : C.gold;
-        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(Math.sin(p.t * 3) * 0.12);
-        this.glow(0, 0, 21, p.type === 'repair' ? 'rgba(122,224,208,0.2)' : 'rgba(239,186,112,0.2)');
-        polygon(ctx, [[0, -13], [13, 0], [0, 13], [-13, 0]], '#1a3046', color);
-        if (p.type === 'repair') { this.line(-5, 0, 5, 0, color, 2); this.line(0, -5, 0, 5, color, 2); }
-        else polygon(ctx, [[1, -7], [-5, 1], [0, 1], [-1, 7], [5, -1], [0, -1]], color);
-        ctx.restore();
-      });
+      game.pickups.forEach(p => this.pickup(p));
+      game.playerBeams.forEach(beam => this.beam(beam, false));
       game.playerBullets.forEach(b => {
         const weapon = game.player.weaponLevel;
         const support = b.source === 'support';
-        const name = support ? 'energy' : weapon >= 3 && b.r >= 5 ? 'beam' : b.vx !== 0 ? 'shard' : weapon >= 2 ? 'missile' : 'round';
+        const descriptor = WEAPONS[b.kind];
+        if (!descriptor || b.kind === 'laser') throw new RangeError('Unknown player projectile kind: ' + b.kind);
+        const name = support ? 'energy' : b.kind === 'gun' ? (weapon >= 2 && b.r >= 5 ? 'heavy' : b.vx !== 0 ? 'shard' : 'round') : descriptor.sprite;
         const frame = this.assets.frames.projectiles[name];
-        const width = b.r * (name === 'missile' ? 2.3 : name === 'beam' ? 1.8 : 2);
+        const width = b.r * (b.kind === 'explosive' ? 2.9 : b.kind === 'homing' ? 2.4 : 2);
         ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(Math.atan2(b.vx, -b.vy));
         if (support) this.line(0, 4, 0, 13, 'rgba(127,239,220,0.42)', 1.2);
+        if (b.kind === 'homing') { this.line(0, 6, 0, 25, '#b794ea', 1.5); this.line(-3, 13, 3, 13, '#d7bbff', 1); }
+        if (b.kind === 'explosive') { this.circle(0, 0, b.r * 1.75, null, '#ffb273', 1.2); this.line(0, 8, 0, 19, '#ffb273', 2.3); }
         this.sprite('projectiles', frame, width);
         ctx.restore();
       });
@@ -707,20 +903,79 @@
       const p = game.player;
       if (showPlayer && p.hp > 0) this.aircraft(p.x, p.y, 0.8, time, p.shield > 0,
         p.invincible > 0 && Math.sin(time * 40) > 0.3 ? 0.4 : 1, game.progression.level);
+      game.enemyBeams.forEach(beam => this.beam(beam, true));
       game.enemyBullets.forEach(b => {
-        const name = b.kind === 'plasma' ? 'plasma' : b.kind === 'bolt' ? 'enemyBeam' : 'enemyBolt';
+        if (!['orb', 'plasma', 'bolt', 'homing', 'explosive'].includes(b.kind)) throw new RangeError('Unknown enemy projectile kind: ' + b.kind);
+        const name = b.kind === 'plasma' || b.kind === 'explosive' ? 'plasma' : b.kind === 'bolt' || b.kind === 'homing' ? 'enemyBeam' : 'enemyBolt';
         const frame = this.assets.frames.projectiles[name];
-        const width = b.r * (b.kind === 'plasma' ? 2.65 : 2.05);
+        const width = b.r * (b.kind === 'plasma' || b.kind === 'explosive' ? 2.65 : 2.05);
         ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(Math.atan2(b.vx, -b.vy));
         if (b.kind === 'plasma') this.glow(0, 0, b.r * 1.9, 'rgba(255,101,49,0.2)');
+        if (b.kind === 'homing') {
+          this.line(0, 6, 0, 25, '#ed8267', 1.3);
+          this.line(-5, 7, -2, 3, '#ffb297', 1.4); this.line(5, 7, 2, 3, '#ffb297', 1.4);
+        }
+        if (b.kind === 'explosive') this.circle(0, 0, b.r * 1.8, null, '#ffb376', 1.2);
         this.sprite('projectiles', frame, width);
         ctx.restore();
       });
+      for (const effect of game.weaponEffects) {
+        if (effect.kind !== 'explosion') throw new RangeError('Unknown weapon effect kind: ' + effect.kind);
+        const fade = clamp01(effect.life / effect.maxLife); const radius = effect.r * (1.1 - fade * 0.7);
+        ctx.save(); ctx.globalAlpha = fade * 0.65;
+        this.circle(effect.x, effect.y, radius, null, effect.color, 2.5);
+        ctx.globalAlpha = fade * 0.16; this.circle(effect.x, effect.y, radius * 0.8, effect.color);
+        ctx.restore();
+      }
       game.particles.forEach(particle => {
         ctx.globalAlpha = Math.max(0, particle.life / particle.maxLife);
         this.circle(particle.x, particle.y, Math.max(0.1, particle.r), particle.color);
       });
       ctx.globalAlpha = 1;
+    }
+
+    pickup(p) {
+      const ctx = this.ctx; const weapon = p.type === 'weapon' ? WEAPONS[p.weapon] : null;
+      if (p.type === 'weapon' && !weapon) throw new RangeError('Unknown weapon pickup: ' + p.weapon);
+      if (!['repair', 'power', 'weapon'].includes(p.type)) throw new RangeError('Unknown pickup type: ' + p.type);
+      const color = weapon ? weapon.color : p.type === 'repair' ? '#90e3d1' : C.gold;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(Math.sin(p.t * 3) * 0.12);
+      this.circle(0, 0, 17, '#102035', color, 1);
+      if (p.type === 'repair') { this.line(-6, 0, 6, 0, color, 2.5); this.line(0, -6, 0, 6, color, 2.5); }
+      else if (weapon) {
+        if (p.weapon === 'laser') { this.line(0, -11, 0, 11, color, 6); this.line(0, -11, 0, 11, '#e9fbff', 2); }
+        else if (p.weapon === 'homing') {
+          polygon(ctx, [[0, -10], [4, -3], [3, 8], [-3, 8], [-4, -3]], color);
+          this.line(-8, 7, -4, 2, color, 1); this.line(8, 7, 4, 2, color, 1);
+        } else if (p.weapon === 'explosive') { this.circle(0, 0, 7, color); this.circle(0, 0, 11, null, color, 1); this.circle(0, 0, 3, '#fff0d3'); }
+        else { this.line(-4, -8, -4, 8, color, 3); this.line(4, -8, 4, 8, color, 3); }
+      } else polygon(ctx, [[1, -7], [-5, 1], [0, 1], [-1, 7], [5, -1], [0, -1]], color);
+      ctx.restore();
+      if (weapon) this.text(weapon.label, p.x, p.y + 25, 9, color, '600', 'center');
+    }
+
+    beam(beam, hostile) {
+      if (![beam.x, beam.y, beam.angle, beam.length, beam.width, beam.t, beam.warning, beam.duration].every(Number.isFinite)
+        || beam.length <= 0 || beam.width <= 0 || beam.warning < 0 || beam.duration <= 0) throw new RangeError('Invalid ' + (hostile ? 'enemy' : 'player') + ' beam geometry');
+      const ctx = this.ctx; const warning = beam.t < beam.warning;
+      const ex = beam.x + Math.cos(beam.angle) * beam.length;
+      const ey = beam.y + Math.sin(beam.angle) * beam.length;
+      ctx.save();
+      if (warning) {
+        ctx.globalAlpha = 0.6;
+        this.line(beam.x, beam.y, ex, ey, '#f18671', 0.8);
+        this.circle(beam.x, beam.y, 7, null, '#ffb9a1', 1.2);
+        this.text('光束锁定', beam.x, beam.y - 15, 8, '#ffb9a1', '500', 'center');
+      } else {
+        const color = hostile ? '#ff694d' : '#51d4ef'; const core = hostile ? '#ffe6c0' : '#e7fbff';
+        ctx.globalAlpha = 0.22;
+        this.line(beam.x, beam.y, ex, ey, color, beam.width + 8);
+        ctx.globalAlpha = 0.87;
+        this.line(beam.x, beam.y, ex, ey, color, beam.width);
+        this.line(beam.x, beam.y, ex, ey, core, Math.max(1.5, beam.width * 0.32));
+        this.circle(beam.x, beam.y, beam.width * 0.52, core);
+      }
+      ctx.restore();
     }
 
     bombWave(game) {
@@ -755,6 +1010,11 @@
 
     button(button, secondary) {
       const ctx = this.ctx;
+      if (button.disabled && button.id.startsWith('reward:')) {
+        this.box(button.x, button.y, button.w, button.h, '#18263b', '#35445b', 10);
+        this.text(button.label, button.x + button.w / 2, button.y + button.h / 2, 13, '#7c8fa9', '500', 'center');
+        return;
+      }
       if (button.id === 'pause') {
         this.box(button.x, button.y, button.w, button.h, 'rgba(8,18,35,0.38)', 'rgba(167,192,223,0.18)', 12);
         ctx.fillStyle = '#b0c3da';
@@ -835,7 +1095,7 @@
       this.text(p.xp + ' / ' + p.nextXp, 371, 528, 9, '#a5b5ca', '500', 'right');
       this.box(34, 544, 337, 3, '#25344a', null, 1.5);
       this.box(34, 544, 337 * Math.min(1, p.xp / p.nextXp), 3, C.gold, null, 1.5);
-      this.getButtons(game).forEach(button => this.button(button, button.id === 'start' && Boolean(game.savedCheckpoint)));
+      this.getSceneButtons(game).forEach(button => this.button(button, button.id === 'start' && Boolean(game.savedCheckpoint)));
       this.text('单指拖动  ·  自动开火  ·  击落敌机升级', W / 2, game.savedCheckpoint ? 678 : 648, 10, '#8295af', '400', 'center');
       this.line(34, game.savedCheckpoint ? 693 : 674, 371, game.savedCheckpoint ? 693 : 674, '#1d2d44');
       this.text('最高纪录', 34, game.savedCheckpoint ? 709 : 694, 9, '#697f9c');
@@ -866,7 +1126,11 @@
       const fill = Math.max(0, Math.min(1, p.xp / p.nextXp)) * 41;
       this.box(20, 249 - fill, 3, fill, '#d4b174', null, 1.5);
       this.text('W' + game.player.weaponLevel, 22, 267, 8, '#93b0d3', '500', 'center');
+      const weapon = WEAPONS[game.player.weapon];
+      if (!weapon) throw new RangeError('Unknown equipped weapon: ' + game.player.weapon);
+      this.text(weapon.label === '追踪弹' ? '追踪' : weapon.label === '爆炸弹' ? '爆裂' : weapon.label, 22, 284, 8, weapon.color, '500', 'center');
       this.text(String(game.score).padStart(6, '0'), 387, 80, 12, '#a4b8d2', '500', 'right');
+      this.text(this.backgrounds[game.stage].name, 387, 99, 8, '#7992ac', '400', 'right');
       this.text(game.stageName + '  ' + (game.stage + 1) + '/' + game.stageCount, 383, 687, 9, '#8195b0', '400', 'right');
       this.box(333, 700, 50, 2, '#273044', null, 1);
       this.box(333, 700, 50 * Math.max(0, Math.min(1, game.progress)), 2, '#91accc', null, 1);
@@ -931,7 +1195,7 @@
       const paused = game.state === 'paused';
       const victory = game.state === 'victory';
       const y = paused ? 188 : 133;
-      this.box(28, y, 349, paused ? 353 : 463, '#101d30', '#35475f', 18);
+      this.box(28, y, 349, paused ? 353 : victory ? 463 : 500, '#101d30', '#35475f', 18);
       this.line(56, y + 1, 349, y + 1, '#9a815c', 1);
       const accent = victory ? C.gold : paused ? C.blue : '#e5ab87';
       this.circle(W / 2, y + 60, 26, '#1b2a40', '#3c5069');
@@ -955,7 +1219,7 @@
         this.text('本局获得 ' + result.totalXp + ' XP · 下局重新成长', W / 2, 421, 9, '#879bb7', '400', 'center');
         if (!victory) this.text('广告 / 充值复活待开放', W / 2, 441, 9, '#879bb7', '400', 'center');
       }
-      this.getButtons(game).forEach(button => this.button(button, button.id === 'home' || button.id === 'restart' && Boolean(game.savedCheckpoint)));
+      this.getSceneButtons(game).forEach(button => this.button(button, button.id === 'home' || button.id === 'revive' || button.id === 'restart' && Boolean(game.savedCheckpoint)));
     }
 
     upgrade(game) {
@@ -963,7 +1227,7 @@
       this.text('S E C T O R   C L E A R', W / 2, 159, 10, C.gold, '500', 'center');
       this.text('BOSS 已击败', W / 2, 202, 25, C.text, '600', 'center');
       this.text('第 ' + (game.stage + 1) + '/' + game.stageCount + ' 关完成 · 选择补给，继续突围', W / 2, 240, 11, '#8fA2bd', '400', 'center');
-      const buttons = this.getButtons(game);
+      const buttons = this.getSceneButtons(game);
       buttons.forEach((button, index) => {
         const option = game.upgradeOptions[index];
         const color = option.id === 'spread' ? C.blue : option.id === 'rapid' ? C.gold : '#a5ded1';
